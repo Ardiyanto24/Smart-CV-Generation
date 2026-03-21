@@ -1,0 +1,18 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+# E = pycodestyle errors, F = pyflakes, I = isort
+select = ["E", "F", "I"]
+# E501 = line too long (handled by black instead)
+ignore = ["E501"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+# "auto" means all async test functions run without @pytest.mark.asyncio
+asyncio_mode = "auto"
+testpaths = ["tests"]
