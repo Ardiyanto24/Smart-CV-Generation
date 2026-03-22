@@ -179,3 +179,49 @@ async def logout(
     )
 
     return MessageResponse(message="Logged out successfully")
+
+
+@router.get("/me", response_model=UserResponse)
+async def me(
+    supabase=Depends(get_supabase),
+    current_user=Depends(get_current_user),
+):
+    """
+    Get the current authenticated user's profile.
+
+    Reads session from httpOnly cookie via get_current_user dependency,
+    then fetches full profile from public.users table.
+    """
+    # Query full profile from public.users using the authenticated user's ID
+    db_response = supabase.table("users").select("*").eq(
+        "id", str(current_user.id)
+    ).single().execute()
+
+    if not db_response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User profile not found",
+        )
+
+    user = db_response.data
+
+    return UserResponse(
+        id=user["id"],
+        name=user["name"],
+        email=user["email"],
+        created_at=user.get("created_at"),
+        updated_at=user.get("updated_at"),
+    )
+```
+
+---
+
+### Verifikasi
+
+Start server dan cek `http://127.0.0.1:8000/docs` — semua 4 endpoint auth harus muncul:
+```
+auth
+  POST /auth/register
+  POST /auth/login
+  POST /auth/logout
+  GET  /auth/me
