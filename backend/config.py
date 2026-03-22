@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     llm_max_retries: int = 3
 
+    # ── Auth ──────────────────────────────────────────────
+    auth_cookie_name: str = "cv_agent_session"
+
 
 @functools.lru_cache
 def get_settings() -> Settings:
