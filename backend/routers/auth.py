@@ -20,6 +20,9 @@ from models.auth import RegisterRequest, UserResponse
 from fastapi import Response
 from models.auth import LoginRequest
 
+from db.auth import get_current_user
+from models.auth import MessageResponse
+
 router = APIRouter()
 
 
@@ -141,3 +144,38 @@ async def login(
         created_at=user.get("created_at"),
         updated_at=user.get("updated_at"),
     )
+
+
+@router.post("/logout", response_model=MessageResponse)
+async def logout(
+    response: Response,
+    supabase=Depends(get_supabase),
+    current_user=Depends(get_current_user),
+):
+    """
+    Invalidate the current session and clear the session cookie.
+
+    Two-step logout:
+    1. Sign out from Supabase Auth (invalidates the token server-side)
+    2. Clear the httpOnly cookie from the browser (max_age=0)
+    """
+    settings = get_settings()
+
+    # Step 1 — Invalidate session in Supabase Auth
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        # Even if sign_out fails, we still clear the cookie
+        pass
+
+    # Step 2 — Delete cookie by setting max_age=0
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value="",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=0,
+    )
+
+    return MessageResponse(message="Logged out successfully")
