@@ -17,6 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from db.supabase import get_supabase
 from models.auth import RegisterRequest, UserResponse
 
+from fastapi import Response
+from models.auth import LoginRequest
+
 router = APIRouter()
 
 
@@ -73,4 +76,68 @@ async def register(
         email=inserted_user["email"],
         created_at=inserted_user.get("created_at"),
         updated_at=inserted_user.get("updated_at"),
+    )
+
+
+@router.post("/login", response_model=UserResponse)
+async def login(
+    body: LoginRequest,
+    response: Response,
+    supabase=Depends(get_supabase),
+):
+    """
+    Authenticate user and set session cookie.
+
+    Sets JWT token as httpOnly cookie — token is never included in response body.
+    User must call GET /auth/me to get their profile after login.
+    """
+    settings = get_settings()
+
+    from config import get_settings
+
+    # Step 1 — Authenticate with Supabase Auth
+    try:
+        auth_response = supabase.auth.sign_in_with_password({
+            "email": body.email,
+            "password": body.password,
+        })
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+
+    if not auth_response.user or not auth_response.session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+
+    # Step 2 — Set JWT as httpOnly cookie
+    # Token never appears in response body — lives only in the cookie
+    access_token = auth_response.session.access_token
+    expires_in = auth_response.session.expires_in or 3600
+
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=access_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=expires_in,
+    )
+
+    # Step 3 — Fetch user profile from public.users
+    db_response = supabase.table("users").select("*").eq(
+        "id", str(auth_response.user.id)
+    ).single().execute()
+
+    user = db_response.data
+
+    return UserResponse(
+        id=user["id"],
+        name=user["name"],
+        email=user["email"],
+        created_at=user.get("created_at"),
+        updated_at=user.get("updated_at"),
     )
