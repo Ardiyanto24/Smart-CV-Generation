@@ -218,7 +218,7 @@ async def me(
 
 ### Verifikasi
 
-Start server dan cek `http://127.0.0.1:8000/docs` — semua 4 endpoint auth harus muncul:
+Start server dan cek `http://127.0.0.1:8000/docs` - semua 4 endpoint auth harus muncul:
 ```
 auth
   POST /auth/register
