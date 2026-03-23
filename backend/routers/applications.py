@@ -90,3 +90,28 @@ async def create_application(
     )
 
     return response.data[0]
+
+
+# ─── GET /applications ────────────────────────────────────────────────────────
+# Mengembalikan semua lamaran milik user yang sedang login
+# Dipakai di dashboard untuk menampilkan list lamaran
+
+@router.get("", response_model=list[ApplicationResponse])
+async def list_applications(
+    current_user=Depends(get_current_user),
+):
+    """
+    Return all job applications belonging to the authenticated user.
+    Ordered by created_at descending (most recent first).
+    """
+    supabase = get_supabase()
+
+    response = (
+        supabase.table("applications")
+        .select("*")
+        .eq("user_id", str(current_user.id))
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    return response.data
