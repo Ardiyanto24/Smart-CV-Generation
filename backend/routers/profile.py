@@ -14,6 +14,8 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
+from datetime import datetime, timezone
+
 router = APIRouter(
     prefix="/profile",
     tags=["profile"],
@@ -122,4 +124,62 @@ async def create_entry(
     #             (3) suggest standalone skills ke user untuk di-approve
 
     # response.data adalah list — ambil element pertama (row yang baru dibuat)
+    return response.data[0]
+
+
+@router.put("/{component}/{id}")
+async def update_entry(
+    component: str,
+    id: str,
+    data: Dict[str, Any] = Body(...),
+    current_user=Depends(get_current_user),
+):
+    """
+    Update an existing entry for a given Master Data component.
+    Only fields present in the request body will be updated (partial update).
+    Ownership is verified before update — users can only edit their own entries.
+    """
+    # Validasi component — raise 400 jika tidak valid
+    validate_component(component)
+
+    supabase = get_supabase()
+
+    # Ownership check — cari entry dengan id DAN user_id yang cocok
+    # Kalau tidak ketemu berarti: entry tidak ada, atau bukan milik user ini
+    existing = (
+        supabase.table(component)
+        .select("id")
+        .eq("id", id)
+        .eq("user_id", str(current_user.id))
+        .execute()
+    )
+
+    if not existing.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Entry not found",
+        )
+
+    # Buang field-field yang tidak boleh diubah via endpoint ini
+    # Meski user sengaja mengirimkan field ini, kita abaikan
+    for protected_field in ["id", "user_id", "created_at", "is_inferred"]:
+        data.pop(protected_field, None)
+
+    # Set updated_at ke waktu sekarang (UTC)
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Lakukan update — hanya row dengan id dan user_id yang cocok
+    response = (
+        supabase.table(component)
+        .update(data)
+        .eq("id", id)
+        .eq("user_id", str(current_user.id))
+        .execute()
+    )
+
+    # TODO Phase 6: Trigger Profile Ingestion Agent re-run after update
+    # Agent akan: (1) re-decompose what_i_did yang baru
+    #             (2) cek stale skills — skill lama yang tidak lagi relevan
+    #             (3) suggest skills baru kalau ada
+
     return response.data[0]
