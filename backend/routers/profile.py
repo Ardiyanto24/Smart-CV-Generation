@@ -12,7 +12,7 @@ from models.profile import (
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status, Response
 
 from datetime import datetime, timezone
 
@@ -183,3 +183,41 @@ async def update_entry(
     #             (3) suggest skills baru kalau ada
 
     return response.data[0]
+
+
+@router.delete("/{component}/{id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_entry(
+    component: str,
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Delete an existing entry for a given Master Data component.
+    No agent is triggered — this is a direct DB operation.
+    Returns HTTP 204 with no response body on success.
+    """
+    # Validasi component — raise 400 jika tidak valid
+    validate_component(component)
+
+    supabase = get_supabase()
+
+    # Ownership check — pastikan entry ada dan milik user ini
+    existing = (
+        supabase.table(component)
+        .select("id")
+        .eq("id", id)
+        .eq("user_id", str(current_user.id))
+        .execute()
+    )
+
+    if not existing.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Entry not found",
+        )
+
+    # Hapus entry dari DB
+    supabase.table(component).delete().eq("id", id).execute()
+
+    # HTTP 204 — tidak ada response body
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
