@@ -115,3 +115,25 @@ async def list_applications(
     )
 
     return response.data
+
+
+# ─── GET /applications/{id} ───────────────────────────────────────────────────
+# Mengembalikan detail satu lamaran berdasarkan ID
+# Dipakai ketika user membuka halaman detail lamaran
+
+@router.get("/{id}", response_model=ApplicationResponse)
+async def get_application(
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Return full detail for a single job application.
+    Raises HTTP 404 if not found or not owned by the current user.
+    """
+    # verify_ownership sudah handle: cek exist + cek ownership + return row
+    application = await verify_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    return application
