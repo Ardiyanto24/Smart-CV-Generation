@@ -18,6 +18,8 @@ from models.cv_output import (
     QCResultResponse,
 )
 from workflow.service import start_workflow as _start_workflow
+from workflow.service import resume_workflow as _resume_workflow
+from workflow.service import get_workflow_status as _get_workflow_status
 
 router = APIRouter(
     prefix="/applications",
@@ -103,57 +105,79 @@ async def start_workflow(
 
 
 # ─── POST /applications/{id}/resume ──────────────────────────────────────────
-@router.post("/{id}/resume", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@router.post("/{id}/resume", status_code=status.HTTP_200_OK)
 @limiter.limit("30/hour")
 async def resume_workflow(
-    request: Request,           # required oleh slowapi untuk rate limiting
+    request: Request,
     id: str,
     body: Dict[str, Any],
     current_user=Depends(get_current_user),
 ):
     """
     Resume a paused workflow after a user interrupt.
-    Body must contain 'action' field indicating which interrupt is being resolved.
-    PHASE 4 STUB: ownership check only, workflow resume not yet implemented.
+
+    Dipanggil setelah tiga interrupt berbeda:
+    - Interrupt 1 (gap review)   : action = "proceed" | "go_back"
+    - Interrupt 2 (brief review) : action = "approve" + optional "adjusted_brief"
+    - Interrupt 3 (CV review)    : action = "submit_review" + "approvals" + "instructions"
     """
+    # Ownership check — pastikan application milik user ini
     await verify_application_ownership(
         application_id=id,
         user_id=str(current_user.id),
     )
 
-    # TODO Phase 5: Resume LangGraph workflow from interrupt checkpoint
-    # Determine interrupt type from body["action"]
-    # Update state and continue graph execution
+    # Validasi 1: "action" key harus ada di request body
+    # Tanpa action, service tidak tahu interrupt mana yang di-resume
+    if "action" not in body:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Request body must contain an 'action' field",
+        )
 
-    return {
-        "status": "not_implemented",
-        "message": "Workflow resume will be wired in Phase 5",
-    }
+    # Validasi 2: nilai action harus salah satu dari empat yang valid
+    valid_actions = {"proceed", "go_back", "approve", "submit_review"}
+    if body["action"] not in valid_actions:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid action. Must be one of: proceed, go_back, approve, submit_review",
+        )
+
+    # Panggil service layer — semua business logic ada di sana
+    result = await _resume_workflow(
+        application_id=id,
+        resume_payload=body,
+    )
+
+    return result
 
 
 # ─── GET /applications/{id}/status ───────────────────────────────────────────
-@router.get("/{id}/status", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@router.get("/{id}/status", status_code=status.HTTP_200_OK)
 async def get_workflow_status(
     id: str,
     current_user=Depends(get_current_user),
 ):
     """
-    Get current workflow state and active node.
-    Used by frontend to poll progress during workflow execution.
-    PHASE 4 STUB: not yet connected to LangGraph checkpoint.
+    Get current workflow status for a given application.
+
+    Dipakai frontend untuk polling progress selama workflow berjalan.
+    Response menentukan halaman apa yang harus ditampilkan:
+    - "running"     → tampilkan WorkflowProgress component
+    - "interrupted" → fetch data relevan, tampilkan ke user
+    - "completed"   → navigasi ke download page
+    - "not_started" → workflow belum dimulai
     """
+    # Ownership check
     await verify_application_ownership(
         application_id=id,
         user_id=str(current_user.id),
     )
 
-    # TODO Phase 5: Read LangGraph workflow state from checkpoint
-    # graph.get_state(config={"configurable": {"thread_id": id}})
+    # Baca status dari LangGraph checkpoint — tidak menjalankan workflow
+    result = await _get_workflow_status(application_id=id)
 
-    return {
-        "status": "not_implemented",
-        "message": "Workflow status will be wired in Phase 5",
-    }
+    return result
 
 
 # ─── GET /applications/{id}/stream ───────────────────────────────────────────
