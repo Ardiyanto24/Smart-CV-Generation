@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from config import get_settings
 from db.supabase import get_supabase
 from workflow.state import CVAgentState
+from workflow.retry import with_retry
 
 # ── Logger ────────────────────────────────────────────────────────────────────
 # Module-level logger — dipakai oleh semua node di file ini
@@ -35,6 +36,7 @@ logger = logging.getLogger("workflow.nodes")
 # Node: parse_jd_jr
 # ══════════════════════════════════════════════════════════════════════════════
 
+@with_retry
 async def parse_jd_jr(state: CVAgentState) -> dict:
     """
     Node 1: Parse raw JD/JR text into structured atomic requirement items.
@@ -134,6 +136,7 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
 # Nodes: analyze_gap, score_gap (sekuensial — score_gap butuh output analyze_gap)
 # ══════════════════════════════════════════════════════════════════════════════
 
+@with_retry
 async def analyze_gap(state: CVAgentState) -> dict:
     """
     Node 2: Analyze each JD/JR item against user's Master Data.
@@ -240,6 +243,7 @@ async def analyze_gap(state: CVAgentState) -> dict:
     return {"gap_analysis_context": gap_analysis_context}
 
 
+@with_retry
 async def score_gap(state: CVAgentState) -> dict:
     """
     Node 3: Calculate fit score based on gap analysis results.
@@ -303,6 +307,7 @@ async def score_gap(state: CVAgentState) -> dict:
 # Berjalan setelah Interrupt 1 (user approve gap analysis)
 # ══════════════════════════════════════════════════════════════════════════════
 
+@with_retry
 async def plan_strategy(state: CVAgentState) -> dict:
     """
     Node 4: Generate CV Strategy Brief based on gap analysis.
@@ -396,6 +401,7 @@ async def plan_strategy(state: CVAgentState) -> dict:
     }
 
 
+@with_retry
 async def select_content(state: CVAgentState) -> dict:
     """
     Node 5: Select which Master Data entries will appear in the CV.
@@ -516,6 +522,7 @@ async def select_content(state: CVAgentState) -> dict:
 #   Fase 4: Summary generation (Summary Writer Agent — selalu terakhir)
 # ══════════════════════════════════════════════════════════════════════════════
 
+@with_retry
 async def generate_content(state: CVAgentState) -> dict:
     """
     Node 6: Generate full CV content from Selected Content Package.
@@ -720,6 +727,7 @@ async def generate_content(state: CVAgentState) -> dict:
 #   - Semantic Reviewer Agent: evaluasi kesesuaian narasi dengan JD/JR
 # ══════════════════════════════════════════════════════════════════════════════
 
+@with_retry
 async def qc_evaluate(state: CVAgentState) -> dict:
     """
     Node 7: Evaluate CV quality from two dimensions in parallel.
@@ -899,6 +907,7 @@ async def qc_evaluate(state: CVAgentState) -> dict:
 # QC-driven harus selesai dulu sebelum user bisa melakukan user-driven revision
 # ══════════════════════════════════════════════════════════════════════════════
 
+@with_retry
 async def revise_content(state: CVAgentState) -> dict:
     """
     Node 9: Handle QC-driven revision (Jalur A).
@@ -983,6 +992,7 @@ async def revise_content(state: CVAgentState) -> dict:
     }
 
 
+@with_retry
 async def apply_user_revisions(state: CVAgentState) -> dict:
     """
     Node 11: Handle user-driven revision (Jalur B).
