@@ -504,3 +504,209 @@ async def select_content(state: CVAgentState) -> dict:
     )
 
     return {"selected_content_package": selected_content_package}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLUSTER 5 — CV Generator
+# Node: generate_content
+# Di Phase 6 akan menjalankan 4 fase:
+#   Fase 1: Pass-through assembly (data non-generated dari Master Data)
+#   Fase 2: Content generation paralel per komponen (Content Writer Agent)
+#   Fase 3: Skills grouping (Skills Grouping Agent)
+#   Fase 4: Summary generation (Summary Writer Agent — selalu terakhir)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def generate_content(state: CVAgentState) -> dict:
+    """
+    Node 6: Generate full CV content from Selected Content Package.
+
+    Reads selected_content_package and strategy_brief from state.
+    Produces Final Structured Output JSON — the complete CV content.
+    Saves to cv_outputs table with version tracking.
+
+    In Phase 6, this node runs 4 sequential phases:
+    1. Pass-through assembly (non-LLM)
+    2. Content Writer Agent per component (parallel within, sequential across)
+    3. Skills Grouping Agent
+    4. Summary Writer Agent (always last)
+
+    Input  : state.selected_content_package, state.strategy_brief, state.cv_version
+    Output : state.cv_output
+    Cluster: 5 — Content Writer + Skills Grouping + Summary Writer
+    """
+    application_id = state["application_id"]
+    cv_version = state["cv_version"]
+    logger.info(
+        f"[generate_content] called for application_id={application_id}, "
+        f"cv_version={cv_version}"
+    )
+
+    supabase = get_supabase()
+
+    # TODO Phase 6: Replace with real Content Writer + Skills Grouping + Summary Writer Agent calls
+    # Fase 1: pass-through assembly dari Master Data
+    # Fase 2: asyncio.gather per komponen — Content Writer Agent
+    # Fase 3: Skills Grouping Agent
+    # Fase 4: Summary Writer Agent (setelah semua section selesai)
+
+    # ── Placeholder cv_output ─────────────────────────────────────────────────
+    # Struktur harus persis Final Structured Output JSON (cluster5_specification Section 8)
+    # Urutan section fixed: header → summary → experience → education →
+    #                       awards → skills → projects → certificates → organizations
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    cv_output = {
+        "application_id": application_id,
+        "version": cv_version,
+        "generated_at": generated_at,
+
+        # ── Header: pass-through dari Master Data (non-generated) ─────────────
+        # Di Phase 6 diambil dari tabel users dan kontak user
+        "header": {
+            "name": "Placeholder Name",
+            "email": "placeholder@email.com",
+            "phone": "+62812345678",
+            "linkedin": "placeholder-linkedin",
+            "github": "placeholder-github",
+        },
+
+        # ── Summary: digenerate oleh Summary Writer Agent ─────────────────────
+        # Selalu ditulis TERAKHIR setelah semua section lain selesai
+        # agar summary benar-benar mencerminkan isi CV, bukan generik
+        "summary": (
+            "Placeholder summary — Data professional dengan pengalaman membangun "
+            "solusi analitik berbasis Python dan SQL. Terbiasa berkolaborasi dengan "
+            "stakeholder bisnis untuk menghasilkan insight yang actionable."
+        ),
+
+        # ── Experience: digenerate oleh Content Writer Agent ──────────────────
+        # Tiga bullet points per entry: what_i_did → challenge → impact
+        # Setiap bullet max 20 kata, diawali action verb
+        "experience": [
+            {
+                "entry_id": "placeholder-exp-uuid",
+                "company": "PT Contoh Indonesia",
+                "role": "Data Analyst",
+                "year": "2023 – 2024",
+                "bullets": [
+                    "Developed Python-based data pipeline processing 1M+ daily transactions for business intelligence reporting.",
+                    "Addressed data quality issues by implementing automated validation checks, reducing error rate by 40%.",
+                    "Delivered weekly SQL dashboards enabling stakeholders to monitor KPIs with 2-day faster turnaround.",
+                ],
+            }
+        ],
+
+        # ── Education: digenerate oleh Content Writer Agent ───────────────────
+        "education": [
+            {
+                "entry_id": "placeholder-edu-uuid",
+                "institution": "Universitas Contoh",
+                "degree": "S1 Statistika",
+                "year": "2019 – 2023",
+                "location": "Jakarta",
+                "bullets": [
+                    "Completed statistical modeling curriculum with focus on applied machine learning and data analysis.",
+                    "Addressed complex research challenges through thesis on predictive modeling for customer churn.",
+                    "Achieved GPA 3.75/4.00 while actively contributing to university data science community.",
+                ],
+            }
+        ],
+
+        # ── Awards: digenerate oleh Content Writer Agent ──────────────────────
+        "awards": [
+            {
+                "entry_id": "placeholder-award-uuid",
+                "title": "Best Data Project — Placeholder Competition",
+                "issuer": "Placeholder Organization",
+                "year": "2023",
+                "bullets": [
+                    "Developed winning predictive model achieving 92% accuracy on real-world dataset.",
+                    "Addressed imbalanced data challenge using SMOTE and ensemble methods.",
+                    "Delivered solution ranked 1st among 50+ competing teams nationally.",
+                ],
+            }
+        ],
+
+        # ── Skills: digenerate oleh Skills Grouping Agent ─────────────────────
+        # Dikelompokkan berdasarkan domain, bukan hanya kategori DB (technical/soft/tool)
+        "skills": {
+            "skills_grouped": [
+                {
+                    "group_label": "Programming Languages",
+                    "items": ["Python", "SQL", "R"],
+                },
+                {
+                    "group_label": "Libraries & Frameworks",
+                    "items": ["Pandas", "Scikit-learn", "TensorFlow"],
+                },
+                {
+                    "group_label": "Tools & Platforms",
+                    "items": ["MySQL", "Tableau", "Git"],
+                },
+                {
+                    "group_label": "Personal Strengths",
+                    "items": ["Stakeholder Communication", "Problem Solving"],
+                },
+            ]
+        },
+
+        # ── Projects: digenerate oleh Content Writer Agent ────────────────────
+        "projects": [
+            {
+                "entry_id": "placeholder-proj-uuid",
+                "title": "Customer Churn Prediction System",
+                "github_url": "https://github.com/placeholder/churn-prediction",
+                "tools": ["Python", "Scikit-learn", "MySQL"],
+                "bullets": [
+                    "Built end-to-end churn prediction pipeline using Random Forest with 87% accuracy.",
+                    "Addressed class imbalance (1:20 ratio) through SMOTE and threshold optimization techniques.",
+                    "Delivered automated retraining pipeline reducing manual intervention by 80% monthly.",
+                ],
+            }
+        ],
+
+        # ── Certificates: pass-through dari Master Data (non-generated) ───────
+        # Tidak ada bullet points — hanya listing metadata
+        "certificates": [
+            {
+                "name": "Machine Learning Specialization",
+                "issuer": "Coursera — Stanford University",
+            }
+        ],
+
+        # ── Organizations: digenerate oleh Content Writer Agent ───────────────
+        "organizations": [
+            {
+                "entry_id": "placeholder-org-uuid",
+                "name": "Data Science Community",
+                "role": "Vice President",
+                "year": "2022",
+                "bullets": [
+                    "Led university data science community with 200+ active members across 3 faculties.",
+                    "Addressed member engagement challenges by launching weekly workshop series.",
+                    "Increased active participation by 60% within one semester through structured programs.",
+                ],
+            }
+        ],
+    }
+
+    # ── Simpan ke cv_outputs table ────────────────────────────────────────────
+    # version dari state — dimulai dari 1, naik setiap revisi
+    # revision_type "initial" — ini adalah versi pertama, bukan hasil revisi
+    # status "draft" — akan berubah menjadi "qc_passed" setelah QC evaluate
+    supabase.table("cv_outputs").insert({
+        "application_id": application_id,
+        "version": cv_version,
+        "content": cv_output,
+        "revision_type": "initial",
+        "section_revised": None,    # None = seluruh CV digenerate, bukan satu section
+        "status": "draft",
+    }).execute()
+
+    logger.info(
+        f"[generate_content] saved cv_output to DB: "
+        f"version={cv_version}, revision_type=initial, status=draft"
+    )
+
+    return {"cv_output": cv_output}
