@@ -1185,3 +1185,66 @@ async def select_best_version(state: CVAgentState) -> dict:
         "cv_output": best_cv_output,
         "cv_version": best_version,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCUMENT RENDERER
+# Node: render_document
+# Node TERAKHIR dalam workflow
+# Di Phase 7 akan memanggil Document Renderer (WeasyPrint + python-docx)
+# untuk mengkonversi cv_output JSON → PDF + DOCX → upload ke Supabase Storage
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def render_document(state: CVAgentState) -> dict:
+    """
+    Node 12 (Final): Render CV output to PDF and DOCX files.
+
+    Takes the final approved cv_output JSON and converts it to downloadable files.
+    Updates cv_outputs status to "final" to mark completion.
+    Stores the file path in state for the frontend to use as download URL.
+
+    In Phase 7: calls Document Renderer which runs WeasyPrint (PDF) and
+    python-docx (DOCX), uploads both to Supabase Storage, returns storage paths.
+
+    Input  : state.cv_output, state.cv_version, state.application_id
+    Output : state.final_output_path
+    External: Document Renderer (pure code — no LLM calls)
+    """
+    application_id = state["application_id"]
+    cv_version = state["cv_version"]
+
+    logger.info(
+        f"[render_document] called for application_id={application_id}, "
+        f"cv_version={cv_version} — this is the final node"
+    )
+
+    supabase = get_supabase()
+
+    # TODO Phase 7: Replace with real Document Renderer call
+    # from renderer.document_renderer import render_and_upload
+    # result = await render_and_upload(state["cv_output"], application_id, cv_version)
+    # pdf_path = result["pdf_path"]
+    # docx_path = result["docx_path"]
+
+    # ── Placeholder path ───────────────────────────────────────────────────────
+    # Format mengikuti konvensi yang akan dipakai di Phase 7:
+    # {application_id}/cv_v{version}.pdf
+    # Path ini disimpan di state dan akan dipakai oleh GET /applications/{id}/download
+    placeholder_path = f"storage/placeholder/{application_id}/cv_v{cv_version}.pdf"
+
+    # ── Update status cv_outputs ke "final" ───────────────────────────────────
+    # Menandai bahwa versi ini sudah dirender dan siap didownload
+    # GET /applications/{id}/download akan query dengan filter status="final"
+    # Update hanya row dengan cv_version yang sesuai — bukan semua versi
+    supabase.table("cv_outputs").update({
+        "status": "final",
+    }).eq("application_id", application_id).eq("version", cv_version).execute()
+
+    logger.info(
+        f"[render_document] workflow complete — "
+        f"final_output_path={placeholder_path}, "
+        f"cv_outputs status updated to 'final' for version={cv_version}"
+    )
+
+    # Return final_output_path — disimpan di state sebagai hasil akhir workflow
+    return {"final_output_path": placeholder_path}
