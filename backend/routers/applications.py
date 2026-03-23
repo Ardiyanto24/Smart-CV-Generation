@@ -1,6 +1,6 @@
 # cv-agent/backend/routers/applications.py
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from db.auth import get_current_user
 from db.supabase import get_supabase
@@ -137,3 +137,34 @@ async def get_application(
     )
 
     return application
+
+
+# ─── DELETE /applications/{id} ───────────────────────────────────────────────
+# Menghapus satu lamaran beserta SELURUH data terkait
+# ON DELETE CASCADE di DB memastikan semua child data ikut terhapus:
+# job_postings, job_requirements, job_descriptions, gap_analysis_results,
+# gap_analysis_scores, cv_strategy_briefs, selected_content_packages,
+# revision_history, cv_outputs, qc_results, qc_overall_scores
+
+@router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_application(
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Delete a job application and all its related data.
+    ON DELETE CASCADE handles cleanup of all child tables automatically.
+    Returns HTTP 204 with no response body on success.
+    """
+    # Ownership check — raise 404 kalau tidak ada atau bukan milik user ini
+    await verify_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    supabase = get_supabase()
+
+    # Satu delete ini akan cascade ke 11 tabel child secara otomatis
+    supabase.table("applications").delete().eq("id", id).execute()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
