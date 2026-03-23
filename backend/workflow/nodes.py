@@ -127,3 +127,171 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
 
     # Return HANYA field yang berubah — LangGraph merge otomatis ke full state
     return {"jd_jr_context": jd_jr_context}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLUSTER 3 — Gap Analyzer
+# Nodes: analyze_gap, score_gap (sekuensial — score_gap butuh output analyze_gap)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def analyze_gap(state: CVAgentState) -> dict:
+    """
+    Node 2: Analyze each JD/JR item against user's Master Data.
+
+    Reads jd_jr_context from state, compares against Master Data,
+    categorizes each item as exact_match, implicit_match, or gap,
+    saves results to DB, and returns gap_analysis_context (Context Package 3).
+
+    Input  : state.jd_jr_context
+    Output : state.gap_analysis_context
+    Cluster: 3 — Gap Analyzer Agent
+    """
+    application_id = state["application_id"]
+    logger.info(f"[analyze_gap] called for application_id={application_id}")
+
+    supabase = get_supabase()
+
+    # TODO Phase 6: Replace with real Gap Analyzer Agent call
+    # from agents.cluster3.gap_analyzer import fetch_master_data, run_gap_analyzer
+    # master_data = await fetch_master_data(state["user_id"])
+    # results = await run_gap_analyzer(application_id, state["jd_jr_context"], master_data)
+
+    # ── Placeholder gap_analysis_context ──────────────────────────────────────
+    # Struktur harus persis Context Package 3
+    # Minimal dua item: satu exact_match dan satu gap
+    # Downstream nodes (score_gap, plan_strategy) membaca dari results list ini
+
+    results = [
+        {
+            # exact_match: ada bukti eksplisit di Master Data
+            "item_id": "r001",
+            "text": "Menguasai Python",
+            "dimension": "JR",
+            "category": "exact_match",
+            "priority": "must",
+            "evidence": [
+                {
+                    "source": "skills",
+                    "entry_id": "placeholder-skill-uuid",
+                    "entry_title": "Python",
+                    "detail": "Standalone skill, is_inferred: false",
+                }
+            ],
+            "reasoning": None,  # exact_match tidak butuh reasoning
+        },
+        {
+            # implicit_match: ada bukti transferable — MySQL → SQL
+            "item_id": "r002",
+            "text": "Pengalaman dengan SQL",
+            "dimension": "JR",
+            "category": "implicit_match",
+            "priority": "must",
+            "evidence": [
+                {
+                    "source": "experience",
+                    "entry_id": "placeholder-exp-uuid",
+                    "entry_title": "PT Contoh Indonesia",
+                    "detail": "MySQL tercantum di skills_used",
+                }
+            ],
+            # reasoning wajib ada untuk implicit_match — menjelaskan koneksi transferable
+            "reasoning": "MySQL adalah implementasi SQL — kemampuan query relasional dapat ditransfer langsung",
+        },
+        {
+            # gap: tidak ada bukti di Master Data sama sekali
+            "item_id": "r003",
+            "text": "Pengalaman dengan AWS atau GCP",
+            "dimension": "JR",
+            "category": "gap",
+            "priority": "nice_to_have",
+            "evidence": [],  # kosong untuk gap
+            "reasoning": None,
+        },
+    ]
+
+    gap_analysis_context = {
+        "application_id": application_id,
+        "results": results,
+    }
+
+    # ── Simpan setiap result item ke DB ────────────────────────────────────────
+    # Satu row per item — dibutuhkan oleh GET /applications/{id}/gap endpoint
+    # dan oleh Planner Agent di Phase 6 untuk membuat CV Strategy Brief
+    for item in results:
+        supabase.table("gap_analysis_results").insert({
+            "application_id": application_id,
+            "item_id": item["item_id"],
+            "text": item["text"],
+            "dimension": item["dimension"],
+            "category": item["category"],
+            "priority": item["priority"],
+            # evidence disimpan sebagai JSONB — harus di-wrap dalam dict
+            "evidence": item["evidence"],
+            "reasoning": item["reasoning"],
+            # suggestion hanya untuk gap items — Phase 6 yang akan mengisi
+            "suggestion": None,
+        }).execute()
+
+    logger.info(
+        f"[analyze_gap] saved {len(results)} gap analysis results to DB "
+        f"for application_id={application_id}"
+    )
+
+    return {"gap_analysis_context": gap_analysis_context}
+
+
+async def score_gap(state: CVAgentState) -> dict:
+    """
+    Node 3: Calculate fit score based on gap analysis results.
+
+    Reads gap_analysis_context from state, computes quantitative score
+    and qualitative assessment, saves to DB, and returns gap_score.
+
+    Input  : state.gap_analysis_context
+    Output : state.gap_score
+    Cluster: 3 — Scoring Agent
+    """
+    application_id = state["application_id"]
+    logger.info(f"[score_gap] called for application_id={application_id}")
+
+    supabase = get_supabase()
+
+    # TODO Phase 6: Replace with real Scoring Agent call
+    # from agents.cluster3.scoring import run_scoring
+    # results = state["gap_analysis_context"]["results"]
+    # return {"gap_score": await run_scoring(application_id, results)}
+
+    # ── Placeholder gap_score ─────────────────────────────────────────────────
+    # Nilai 72.0 → verdict "cukup_cocok" (range 50-74)
+    # proceed_recommendation "lanjut" → workflow melanjutkan ke plan_strategy
+    # Kalau "tinjau" → user disarankan kembali update profil dulu
+    gap_score = {
+        "quantitative_score": 72.0,
+        "verdict": "cukup_cocok",
+        "strength": "Kompetensi teknis core (Python, SQL) kuat dan exact match dengan requirements utama",
+        "concern": "Gap di beberapa requirement nice_to_have seperti cloud platform experience",
+        "recommendation": "Lanjutkan generate CV, pastikan narasi menjembatani gap yang ada",
+        "proceed_recommendation": "lanjut",
+    }
+
+    # ── Simpan ke DB ──────────────────────────────────────────────────────────
+    # Satu row per application — dibutuhkan oleh GET /applications/{id}/gap endpoint
+    # Relasi one-to-one dengan applications table (satu application, satu score)
+    supabase.table("gap_analysis_scores").insert({
+        "application_id": application_id,
+        "quantitative_score": gap_score["quantitative_score"],
+        "verdict": gap_score["verdict"],
+        "strength": gap_score["strength"],
+        "concern": gap_score["concern"],
+        "recommendation": gap_score["recommendation"],
+        "proceed_recommendation": gap_score["proceed_recommendation"],
+    }).execute()
+
+    logger.info(
+        f"[score_gap] saved gap score to DB: "
+        f"score={gap_score['quantitative_score']}, "
+        f"verdict={gap_score['verdict']}, "
+        f"proceed={gap_score['proceed_recommendation']}"
+    )
+
+    return {"gap_score": gap_score}
