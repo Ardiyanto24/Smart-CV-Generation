@@ -1,5 +1,10 @@
 from contextlib import asynccontextmanager
 
+import sentry_sdk
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from config import get_settings
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
@@ -16,7 +21,14 @@ from routers.output import router as output_router              # baru
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────
-    # TODO Phase 4: Initialize Sentry
+    settings = get_settings()
+
+    if settings.sentry_dsn_backend:
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn_backend,
+            environment="production",
+            traces_sample_rate=1.0,
+        )
     # TODO Phase 4: Verify DB connection
     yield
     # ── Shutdown ─────────────────────────────────────────
@@ -41,6 +53,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Global Exception Handler ──────────────────────────────────────────────────
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        raise exc
+    sentry_sdk.capture_exception(exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal server error occurred"},
+    )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 # Urutan penting — applications harus sebelum workflow dan output
