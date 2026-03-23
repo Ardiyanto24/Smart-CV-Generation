@@ -54,6 +54,89 @@ def validate_component(component: str) -> str:
     return component
 
 
+
+@router.get("/inferred-skills", response_model=list[SkillResponse])
+async def get_inferred_skills(
+    current_user=Depends(get_current_user),
+):
+    """
+    Return all agent-inferred skill suggestions pending user decision.
+    These are skills the Profile Ingestion Agent detected from profile entries
+    but has not yet been approved or rejected by the user.
+    """
+    supabase = get_supabase()
+
+    response = (
+        supabase.table("skills")
+        .select("*")
+        .eq("user_id", str(current_user.id))
+        .eq("is_inferred", True)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    return response.data
+
+
+# ─── POST /profile/inferred-skills/batch ─────────────────────────────────────
+# Memproses keputusan user atas skill suggestions secara batch
+# approved → insert ke DB dengan is_inferred=true
+# rejected → buang begitu saja, tidak disimpan ke DB
+
+@router.post("/inferred-skills/batch")
+async def batch_process_inferred_skills(
+    batch: InferredSkillBatchRequest,
+    current_user=Depends(get_current_user),
+):
+    """
+    Process a batch of skill suggestions — approve some, reject others.
+    Approved skills are inserted into the skills table.
+    Rejected skills are simply discarded (not saved to DB).
+    Duplicate skills (case-insensitive) are silently skipped.
+    """
+    supabase = get_supabase()
+
+    # Ambil semua skills user yang sudah ada untuk duplicate check
+    existing_response = (
+        supabase.table("skills")
+        .select("name")
+        .eq("user_id", str(current_user.id))
+        .execute()
+    )
+
+    # Buat set nama skills yang sudah ada — lowercase untuk case-insensitive comparison
+    existing_names = {
+        row["name"].lower()
+        for row in existing_response.data
+    }
+
+    approved_count = 0
+
+    for skill in batch.approved:
+        # Skip kalau nama skill sudah ada (case-insensitive)
+        if skill.name.lower() in existing_names:
+            continue
+
+        # Insert skill baru ke DB
+        supabase.table("skills").insert({
+            "user_id": str(current_user.id),
+            "name": skill.name,
+            "category": skill.category.value,  # .value karena category adalah Enum
+            "source": skill.source,
+            "is_inferred": True,
+        }).execute()
+
+        # Tambahkan ke existing_names untuk mencegah duplikat
+        # dalam batch yang sama (kalau user kirim dua skill dengan nama sama)
+        existing_names.add(skill.name.lower())
+        approved_count += 1
+
+    return {
+        "approved_count": approved_count,
+        "rejected_count": len(batch.rejected),
+    }
+
+
 # ─── GET /profile/{component} ─────────────────────────────────────────────────
 # Mengembalikan semua entries untuk satu komponen milik user yang sedang login
 # Contoh: GET /profile/experience → semua experience entries user ini
