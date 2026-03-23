@@ -1,27 +1,23 @@
 """
-Auth Router — cv-agent backend
+Auth Router - cv-agent backend
 
 Handles all authentication endpoints:
-    POST /auth/register  — create new user account
-    POST /auth/login     — authenticate and set session cookie
-    POST /auth/logout    — invalidate session and clear cookie
-    GET  /auth/me        — get current authenticated user profile
+    POST /auth/register  - create new user account
+    POST /auth/login     - authenticate and set session cookie
+    POST /auth/logout    - invalidate session and clear cookie
+    GET  /auth/me        - get current authenticated user profile
 
 All routes delegate credential validation to Supabase Auth.
-JWT tokens are stored exclusively in httpOnly cookies — never in
+JWT tokens are stored exclusively in httpOnly cookies, never in
 localStorage or response bodies.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
-from db.supabase import get_supabase
-from models.auth import RegisterRequest, UserResponse
-
-from fastapi import Response
-from models.auth import LoginRequest
-
+from config import get_settings
 from db.auth import get_current_user
-from models.auth import MessageResponse
+from db.supabase import get_supabase
+from models.auth import LoginRequest, MessageResponse, RegisterRequest, UserResponse
 
 router = APIRouter()
 
@@ -31,13 +27,6 @@ async def register(
     body: RegisterRequest,
     supabase=Depends(get_supabase),
 ):
-    """
-    Register a new user account.
-
-    Creates a Supabase Auth entry and a corresponding public.users profile row.
-    Does NOT set a session cookie — user must login separately after registering.
-    """
-    # Step 1 — Create user in Supabase Auth
     try:
         auth_response = supabase.auth.sign_up({
             "email": body.email,
@@ -57,8 +46,6 @@ async def register(
 
     user_id = str(auth_response.user.id)
 
-    # Step 2 — Insert profile into public.users
-    # Uses service role client to bypass RLS — backend operation only
     try:
         db_response = supabase.table("users").insert({
             "id": user_id,
@@ -88,17 +75,8 @@ async def login(
     response: Response,
     supabase=Depends(get_supabase),
 ):
-    """
-    Authenticate user and set session cookie.
-
-    Sets JWT token as httpOnly cookie — token is never included in response body.
-    User must call GET /auth/me to get their profile after login.
-    """
     settings = get_settings()
 
-    from config import get_settings
-
-    # Step 1 — Authenticate with Supabase Auth
     try:
         auth_response = supabase.auth.sign_in_with_password({
             "email": body.email,
@@ -116,8 +94,6 @@ async def login(
             detail="Invalid email or password",
         )
 
-    # Step 2 — Set JWT as httpOnly cookie
-    # Token never appears in response body — lives only in the cookie
     access_token = auth_response.session.access_token
     expires_in = auth_response.session.expires_in or 3600
 
@@ -130,7 +106,6 @@ async def login(
         max_age=expires_in,
     )
 
-    # Step 3 — Fetch user profile from public.users
     db_response = supabase.table("users").select("*").eq(
         "id", str(auth_response.user.id)
     ).single().execute()
@@ -152,23 +127,13 @@ async def logout(
     supabase=Depends(get_supabase),
     current_user=Depends(get_current_user),
 ):
-    """
-    Invalidate the current session and clear the session cookie.
-
-    Two-step logout:
-    1. Sign out from Supabase Auth (invalidates the token server-side)
-    2. Clear the httpOnly cookie from the browser (max_age=0)
-    """
     settings = get_settings()
 
-    # Step 1 — Invalidate session in Supabase Auth
     try:
         supabase.auth.sign_out()
     except Exception:
-        # Even if sign_out fails, we still clear the cookie
         pass
 
-    # Step 2 — Delete cookie by setting max_age=0
     response.set_cookie(
         key=settings.auth_cookie_name,
         value="",
@@ -186,13 +151,6 @@ async def me(
     supabase=Depends(get_supabase),
     current_user=Depends(get_current_user),
 ):
-    """
-    Get the current authenticated user's profile.
-
-    Reads session from httpOnly cookie via get_current_user dependency,
-    then fetches full profile from public.users table.
-    """
-    # Query full profile from public.users using the authenticated user's ID
     db_response = supabase.table("users").select("*").eq(
         "id", str(current_user.id)
     ).single().execute()
