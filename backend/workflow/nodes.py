@@ -710,3 +710,182 @@ async def generate_content(state: CVAgentState) -> dict:
     )
 
     return {"cv_output": cv_output}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLUSTER 6 — Quality Control
+# Node: qc_evaluate
+# Di Phase 6 akan menjalankan dua agent SECARA PARALEL:
+#   - ATS Scoring Agent: keyword matching deterministik + LLM preserve analyzer
+#   - Semantic Reviewer Agent: evaluasi kesesuaian narasi dengan JD/JR
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def qc_evaluate(state: CVAgentState) -> dict:
+    """
+    Node 7: Evaluate CV quality from two dimensions in parallel.
+
+    Reads cv_output and jd_jr_context from state.
+    Runs ATS Scoring and Semantic Review (parallel in Phase 6).
+    Saves results to qc_results (per section) and qc_overall_scores (aggregate).
+    Increments qc_iteration counter.
+
+    CRITICAL: In Phase 5 stub, all sections have action_required=false.
+    This ensures workflow proceeds to user review without entering revision loop.
+    In Phase 6, real scores determine which sections need revision.
+
+    Input  : state.cv_output, state.jd_jr_context, state.cv_version, state.qc_iteration
+    Output : state.qc_report, state.qc_iteration (incremented)
+    Cluster: 6 — ATS Scoring Agent + Semantic Reviewer Agent (parallel)
+    """
+    application_id = state["application_id"]
+    cv_version = state["cv_version"]
+
+    # qc_iteration di state adalah nilai SEBELUM run ini
+    # iteration yang disimpan ke DB dan di-report adalah nilai SETELAH increment
+    current_iteration = state["qc_iteration"] + 1
+
+    logger.info(
+        f"[qc_evaluate] called for application_id={application_id}, "
+        f"cv_version={cv_version}, iteration={current_iteration}"
+    )
+
+    supabase = get_supabase()
+
+    # TODO Phase 6: Replace with real ATS Scoring + Semantic Reviewer Agent calls (parallel)
+    # from agents.cluster6.ats_scoring import run_ats_scoring
+    # from agents.cluster6.semantic_reviewer import run_semantic_review
+    # from agents.cluster6.qc_combiner import combine_qc_results
+    # settings = get_settings()
+    # ats_result, semantic_results = await asyncio.gather(
+    #     run_ats_scoring(cv_output, keyword_targets, job_requirements),
+    #     run_semantic_review(cv_output, jd_jr_context, narrative_instructions),
+    # )
+    # qc_report = combine_qc_results(ats_result, semantic_results, cv_version, current_iteration, settings)
+
+    # ── Placeholder sections ──────────────────────────────────────────────────
+    # Satu entry per section CV — mengikuti urutan fixed dari cluster5_specification
+    # action_required: false di SEMUA section — kritis untuk mencegah revision loop
+    # di Phase 5. Di Phase 6, nilai ini ditentukan oleh real QC scores.
+
+    sections = [
+        {
+            "section": "summary",
+            "entry_id": None,           # None untuk section yang tidak map ke satu entry
+            "ats_score": 78.0,
+            "ats_status": "passed",
+            "semantic_score": 80.0,
+            "semantic_status": "passed",
+            "action_required": False,   # ← KRITIS: harus False di Phase 5
+            "preserve": ["opening sentence mencerminkan primary_angle dengan baik"],
+            "revise": [],
+            "missed_keywords": [],
+        },
+        {
+            "section": "experience",
+            "entry_id": "placeholder-exp-uuid",
+            "ats_score": 82.0,
+            "ats_status": "passed",
+            "semantic_score": 79.0,
+            "semantic_status": "passed",
+            "action_required": False,
+            "preserve": ["keyword 'Python' di bullet 1", "action verb 'Developed' di bullet 1"],
+            "revise": [],
+            "missed_keywords": [],
+        },
+        {
+            "section": "education",
+            "entry_id": "placeholder-edu-uuid",
+            "ats_score": 70.0,
+            "ats_status": "passed",
+            "semantic_score": 72.0,
+            "semantic_status": "passed",
+            "action_required": False,
+            "preserve": ["GPA mention di bullet 3"],
+            "revise": [],
+            "missed_keywords": [],
+        },
+        {
+            "section": "skills",
+            "entry_id": None,
+            "ats_score": 85.0,
+            "ats_status": "passed",
+            "semantic_score": 83.0,
+            "semantic_status": "passed",
+            "action_required": False,
+            "preserve": ["Python dan SQL di Programming Languages group"],
+            "revise": [],
+            "missed_keywords": [],
+        },
+        {
+            "section": "projects",
+            "entry_id": "placeholder-proj-uuid",
+            "ats_score": 76.0,
+            "ats_status": "passed",
+            "semantic_score": 74.0,
+            "semantic_status": "passed",
+            "action_required": False,
+            "preserve": ["keyword 'data pipeline' di bullet 1"],
+            "revise": [],
+            "missed_keywords": [],
+        },
+    ]
+
+    # ── Build qc_report — Context Package 5 ───────────────────────────────────
+    qc_report = {
+        "application_id": application_id,
+        "cv_version": cv_version,
+        "iteration": current_iteration,
+        "overall_ats_score": 78.0,
+        "sections": sections,
+    }
+
+    # ── Simpan satu row per section ke qc_results ─────────────────────────────
+    # Dibutuhkan oleh GET /applications/{id}/qc endpoint
+    # dan oleh select_best_version node (untuk best version selection
+    # saat MAX_QC_ITERATIONS habis — memilih versi dengan combined_score tertinggi)
+    for section in sections:
+        supabase.table("qc_results").insert({
+            "application_id": application_id,
+            "cv_version": cv_version,
+            "iteration": current_iteration,
+            "section": section["section"],
+            "entry_id": section["entry_id"],
+            "ats_score": section["ats_score"],
+            "ats_status": section["ats_status"],
+            "semantic_score": section["semantic_score"],
+            "semantic_status": section["semantic_status"],
+            "action_required": section["action_required"],
+            "preserve": section["preserve"],
+            "revise": section["revise"],
+            "missed_keywords": section["missed_keywords"],
+            # combined_score untuk best version selection di select_best_version node
+            # formula: (ats × 0.5) + (semantic × 0.5) — weights dari settings
+            "combined_score": (section["ats_score"] * 0.5) + (section["semantic_score"] * 0.5),
+        }).execute()
+
+    # ── Simpan aggregate score ke qc_overall_scores ───────────────────────────
+    # Satu row per QC run — berisi ringkasan keseluruhan
+    # sections_passed dan sections_failed untuk dashboard user
+    sections_passed = sum(1 for s in sections if not s["action_required"])
+    sections_failed = sum(1 for s in sections if s["action_required"])
+
+    supabase.table("qc_overall_scores").insert({
+        "application_id": application_id,
+        "cv_version": cv_version,
+        "iteration": current_iteration,
+        "overall_ats_score": qc_report["overall_ats_score"],
+        "sections_passed": sections_passed,
+        "sections_failed": sections_failed,
+    }).execute()
+
+    logger.info(
+        f"[qc_evaluate] QC complete: iteration={current_iteration}, "
+        f"overall_ats={qc_report['overall_ats_score']}, "
+        f"passed={sections_passed}, failed={sections_failed}"
+    )
+
+    # Return dua field — qc_report (hasil evaluasi) dan qc_iteration (counter diupdate)
+    return {
+        "qc_report": qc_report,
+        "qc_iteration": current_iteration,  # update counter di state
+    }
