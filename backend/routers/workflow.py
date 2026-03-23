@@ -1,9 +1,8 @@
 # cv-agent/backend/routers/workflow.py
 
-from datetime import datetime, timezone
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from db.auth import get_current_user
 from db.limiter import limiter
@@ -28,7 +27,6 @@ router = APIRouter(
 # ─── Helper: Verify Application Ownership ─────────────────────────────────────
 # Versi workflow router dari ownership check
 # Sengaja tidak di-share dengan applications.py — routers tidak saling import
-# Mengembalikan application row kalau valid, raise 404 kalau tidak
 
 async def verify_application_ownership(
     application_id: str,
@@ -56,3 +54,327 @@ async def verify_application_ownership(
         )
 
     return response.data[0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUBSTEP 4.2 — WORKFLOW CONTROL STUBS
+# Endpoints ini akan diisi implementasinya di Phase 5
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── POST /applications/{id}/start ───────────────────────────────────────────
+@router.post("/{id}/start", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@limiter.limit("5/hour")
+async def start_workflow(
+    request: Request,           # required oleh slowapi untuk rate limiting
+    id: str,
+    data: JobPostingCreate,
+    current_user=Depends(get_current_user),
+):
+    """
+    Start the CV generation workflow for a given application.
+    Accepts JD and JR text, saves raw input, then triggers the workflow.
+    PHASE 4 STUB: saves job posting but does not start the workflow yet.
+    """
+    await verify_application_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    supabase = get_supabase()
+
+    # Simpan raw JD/JR ke DB — sudah fully implemented
+    # Data ini dibutuhkan Parser Agent di Phase 5
+    supabase.table("job_postings").insert({
+        "application_id": id,
+        "jd_raw": data.jd_raw,
+        "jr_raw": data.jr_raw,
+    }).execute()
+
+    # TODO Phase 5: Start LangGraph workflow node parse_jd_jr
+    # graph.ainvoke(initial_state, config={"configurable": {"thread_id": id}})
+
+    return {
+        "status": "not_implemented",
+        "message": "Workflow will be wired in Phase 5",
+    }
+
+
+# ─── POST /applications/{id}/resume ──────────────────────────────────────────
+@router.post("/{id}/resume", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@limiter.limit("30/hour")
+async def resume_workflow(
+    request: Request,           # required oleh slowapi untuk rate limiting
+    id: str,
+    body: Dict[str, Any],
+    current_user=Depends(get_current_user),
+):
+    """
+    Resume a paused workflow after a user interrupt.
+    Body must contain 'action' field indicating which interrupt is being resolved.
+    PHASE 4 STUB: ownership check only, workflow resume not yet implemented.
+    """
+    await verify_application_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    # TODO Phase 5: Resume LangGraph workflow from interrupt checkpoint
+    # Determine interrupt type from body["action"]
+    # Update state and continue graph execution
+
+    return {
+        "status": "not_implemented",
+        "message": "Workflow resume will be wired in Phase 5",
+    }
+
+
+# ─── GET /applications/{id}/status ───────────────────────────────────────────
+@router.get("/{id}/status", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+async def get_workflow_status(
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Get current workflow state and active node.
+    Used by frontend to poll progress during workflow execution.
+    PHASE 4 STUB: not yet connected to LangGraph checkpoint.
+    """
+    await verify_application_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    # TODO Phase 5: Read LangGraph workflow state from checkpoint
+    # graph.get_state(config={"configurable": {"thread_id": id}})
+
+    return {
+        "status": "not_implemented",
+        "message": "Workflow status will be wired in Phase 5",
+    }
+
+
+# ─── GET /applications/{id}/stream ───────────────────────────────────────────
+@router.get("/{id}/stream", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+async def stream_workflow_events(
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    SSE stream for real-time workflow progress updates.
+    Frontend subscribes to receive node-by-node progress messages.
+    PHASE 4 STUB: SSE stream not yet implemented.
+    """
+    await verify_application_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    # TODO Phase 5: Implement SSE stream for LangGraph progress events
+    # return StreamingResponse(
+    #     stream_workflow_events(id),
+    #     media_type="text/event-stream"
+    # )
+
+    return {
+        "status": "not_implemented",
+        "message": "SSE stream will be wired in Phase 5",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUBSTEP 4.3 — DATA READ ENDPOINTS
+# Endpoints ini fully implemented di Phase 4 — membaca data hasil kerja agents
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── GET /applications/{id}/gap ───────────────────────────────────────────────
+# Membaca hasil Gap Analysis — dikerjakan oleh Gap Analyzer Agent (Cluster 3)
+# Menggabungkan dua query: gap_analysis_results (list) + gap_analysis_scores (skor)
+
+@router.get("/{id}/gap", response_model=GapAnalysisFullResponse)
+async def get_gap_analysis(
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Return the full Gap Analysis report for an application.
+    Combines gap result items (exact_match, implicit_match, gap) with the
+    overall score from the Scoring Agent.
+    """
+    await verify_application_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    supabase = get_supabase()
+
+    # Query 1: semua gap result items, diurutkan by item_id
+    results_response = (
+        supabase.table("gap_analysis_results")
+        .select("*")
+        .eq("application_id", id)
+        .order("item_id")
+        .execute()
+    )
+
+    # Query 2: satu baris score per application
+    score_response = (
+        supabase.table("gap_analysis_scores")
+        .select("*")
+        .eq("application_id", id)
+        .execute()
+    )
+
+    # Kedua query harus return data — kalau salah satu kosong, berarti
+    # gap analysis belum dijalankan untuk application ini
+    if not results_response.data or not score_response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Gap analysis not found for this application",
+        )
+
+    # Rakit GapAnalysisFullResponse dari dua query terpisah
+    return GapAnalysisFullResponse(
+        results=[GapAnalysisResultResponse(**item) for item in results_response.data],
+        score=GapAnalysisScoreResponse(**score_response.data[0]),
+    )
+
+
+# ─── GET /applications/{id}/brief ─────────────────────────────────────────────
+# Membaca CV Strategy Brief — dibuat oleh Planner Agent (Cluster 4)
+# Mengambil versi terbaru (created_at descending)
+
+@router.get("/{id}/brief", response_model=CVStrategyBriefResponse)
+async def get_strategy_brief(
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Return the CV Strategy Brief for an application.
+    Returns the most recent brief if multiple versions exist.
+    """
+    await verify_application_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    supabase = get_supabase()
+
+    # Ambil brief terbaru — order by created_at desc, limit 1
+    response = (
+        supabase.table("cv_strategy_briefs")
+        .select("*")
+        .eq("application_id", id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Strategy brief not found for this application",
+        )
+
+    return CVStrategyBriefResponse(**response.data[0])
+
+
+# ─── GET /applications/{id}/cv ────────────────────────────────────────────────
+# Membaca CV output terbaru — dibuat oleh Content Writer Agent (Cluster 5)
+# Mengambil versi dengan version number tertinggi
+
+@router.get("/{id}/cv", response_model=CVOutputResponse)
+async def get_cv_output(
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Return the latest CV output for an application.
+    Returns the highest version number if multiple revisions exist.
+    """
+    await verify_application_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    supabase = get_supabase()
+
+    # Ambil CV output dengan version tertinggi
+    # order by version desc, limit 1
+    response = (
+        supabase.table("cv_outputs")
+        .select("*")
+        .eq("application_id", id)
+        .order("version", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="CV output not found for this application",
+        )
+
+    return CVOutputResponse(**response.data[0])
+
+
+# ─── GET /applications/{id}/qc ────────────────────────────────────────────────
+# Membaca QC Report terbaru — dibuat oleh ATS Scoring + Semantic Reviewer (Cluster 6)
+# Butuh dua query: (1) cari run terbaru di qc_overall_scores,
+#                  (2) fetch semua sections dari qc_results untuk run itu
+
+@router.get("/{id}/qc", response_model=QCReportResponse)
+async def get_qc_report(
+    id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Return the latest QC report for an application.
+    Identifies the most recent QC run by highest cv_version + iteration,
+    then fetches all section results for that run.
+    """
+    await verify_application_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    supabase = get_supabase()
+
+    # Query 1: cari QC run terbaru — tertinggi cv_version, lalu iteration
+    overall_response = (
+        supabase.table("qc_overall_scores")
+        .select("*")
+        .eq("application_id", id)
+        .order("cv_version", desc=True)
+        .order("iteration", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not overall_response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="QC report not found for this application",
+        )
+
+    latest = overall_response.data[0]
+    cv_version = latest["cv_version"]
+    iteration = latest["iteration"]
+
+    # Query 2: fetch semua section results untuk run yang ditemukan di atas
+    sections_response = (
+        supabase.table("qc_results")
+        .select("*")
+        .eq("application_id", id)
+        .eq("cv_version", cv_version)
+        .eq("iteration", iteration)
+        .execute()
+    )
+
+    # Rakit QCReportResponse
+    return QCReportResponse(
+        cv_version=cv_version,
+        iteration=iteration,
+        overall_ats_score=latest.get("overall_ats_score"),
+        sections=[QCResultResponse(**s) for s in sections_response.data],
+    )
