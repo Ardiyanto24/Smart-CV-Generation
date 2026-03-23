@@ -7,6 +7,7 @@ from slowapi.errors import RateLimitExceeded
 
 from db.limiter import limiter
 from routers.auth import router as auth_router
+from routers.profile import router as profile_router
 
 
 @asynccontextmanager
@@ -40,7 +41,7 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
-
+app.include_router(profile_router)
 
 # ── Health Check ──────────────────────────────────────────────────────────────
 @app.get("/health")
