@@ -212,16 +212,3 @@ async def me(
         created_at=user.get("created_at"),
         updated_at=user.get("updated_at"),
     )
-```
-
----
-
-### Verifikasi
-
-Start server dan cek `http://127.0.0.1:8000/docs` - semua 4 endpoint auth harus muncul:
-```
-auth
-  POST /auth/register
-  POST /auth/login
-  POST /auth/logout
-  GET  /auth/me
