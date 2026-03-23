@@ -1,6 +1,7 @@
 # cv-agent/backend/routers/applications.py
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from datetime import datetime, timezone
 
 from db.auth import get_current_user
 from db.supabase import get_supabase
@@ -168,3 +169,40 @@ async def delete_application(
     supabase.table("applications").delete().eq("id", id).execute()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ─── PATCH /applications/{id}/status ─────────────────────────────────────────
+# Mengubah status lamaran — untuk tracking progress di dunia nyata
+# Contoh: draft → applied → interview → offer → accepted/rejected
+
+@router.patch("/{id}/status", response_model=ApplicationResponse)
+async def update_application_status(
+    id: str,
+    data: ApplicationStatusUpdate,
+    current_user=Depends(get_current_user),
+):
+    """
+    Update the status of a job application.
+    Only the status field and updated_at timestamp are changed.
+    Valid status values: draft, applied, interview, offer, rejected, accepted.
+    """
+    # Ownership check — raise 404 kalau tidak ada atau bukan milik user ini
+    await verify_ownership(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
+
+    supabase = get_supabase()
+
+    # Update hanya status dan updated_at — tidak ada field lain yang berubah
+    response = (
+        supabase.table("applications")
+        .update({
+            "status": data.status.value,    # .value karena ApplicationStatus adalah Enum
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        .eq("id", id)
+        .execute()
+    )
+
+    return response.data[0]
