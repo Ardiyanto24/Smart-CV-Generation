@@ -3,6 +3,7 @@
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
 from db.auth import get_current_user
 from db.limiter import limiter
@@ -20,6 +21,7 @@ from models.cv_output import (
 from workflow.service import start_workflow as _start_workflow
 from workflow.service import resume_workflow as _resume_workflow
 from workflow.service import get_workflow_status as _get_workflow_status
+from workflow.service import stream_workflow_events as _stream_workflow_events
 
 router = APIRouter(
     prefix="/applications",
@@ -181,31 +183,40 @@ async def get_workflow_status(
 
 
 # ─── GET /applications/{id}/stream ───────────────────────────────────────────
-@router.get("/{id}/stream", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@router.get("/{id}/stream")
 async def stream_workflow_events(
     id: str,
     current_user=Depends(get_current_user),
 ):
     """
-    SSE stream for real-time workflow progress updates.
-    Frontend subscribes to receive node-by-node progress messages.
-    PHASE 4 STUB: SSE stream not yet implemented.
+    SSE stream untuk real-time workflow progress updates.
+
+    Frontend subscribe ke endpoint ini menggunakan browser EventSource API.
+    Server mengirim event setiap kali satu node selesai dijalankan.
+
+    Event format: data: {"event": "on_chain_start"|"on_chain_end", "node": "node_name"}
+
+    Headers khusus mencegah proxy buffering yang akan merusak real-time behavior.
     """
+    # Ownership check
     await verify_application_ownership(
         application_id=id,
         user_id=str(current_user.id),
     )
 
-    # TODO Phase 5: Implement SSE stream for LangGraph progress events
-    # return StreamingResponse(
-    #     stream_workflow_events(id),
-    #     media_type="text/event-stream"
-    # )
-
-    return {
-        "status": "not_implemented",
-        "message": "SSE stream will be wired in Phase 5",
-    }
+    # StreamingResponse menerima async generator dan stream hasilnya ke client
+    # media_type "text/event-stream" adalah MIME type standar untuk SSE
+    return StreamingResponse(
+        content=_stream_workflow_events(application_id=id),
+        media_type="text/event-stream",
+        headers={
+            # Mencegah browser dan CDN cache SSE stream
+            "Cache-Control": "no-cache",
+            # Khusus untuk Nginx — matikan proxy buffering
+            # Tanpa ini, Nginx akan buffer semua events sebelum dikirim ke client
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
