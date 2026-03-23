@@ -17,6 +17,7 @@ from models.cv_output import (
     QCReportResponse,
     QCResultResponse,
 )
+from workflow.service import start_workflow as _start_workflow
 
 router = APIRouter(
     prefix="/applications",
@@ -62,19 +63,20 @@ async def verify_application_ownership(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ─── POST /applications/{id}/start ───────────────────────────────────────────
-@router.post("/{id}/start", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@router.post("/{id}/start", status_code=status.HTTP_200_OK)
 @limiter.limit("5/hour")
 async def start_workflow(
-    request: Request,           # required oleh slowapi untuk rate limiting
+    request: Request,
     id: str,
     data: JobPostingCreate,
     current_user=Depends(get_current_user),
 ):
     """
     Start the CV generation workflow for a given application.
-    Accepts JD and JR text, saves raw input, then triggers the workflow.
-    PHASE 4 STUB: saves job posting but does not start the workflow yet.
+    Saves raw JD/JR input, then triggers the LangGraph workflow.
+    Workflow runs until Interrupt 1 (user_gap_review after score_gap).
     """
+    # Ownership check
     await verify_application_ownership(
         application_id=id,
         user_id=str(current_user.id),
@@ -82,21 +84,22 @@ async def start_workflow(
 
     supabase = get_supabase()
 
-    # Simpan raw JD/JR ke DB — sudah fully implemented
-    # Data ini dibutuhkan Parser Agent di Phase 5
+    # Simpan raw JD/JR ke DB — dibutuhkan oleh parse_jd_jr node
+    # Node tersebut akan membaca dari tabel ini saat workflow berjalan
     supabase.table("job_postings").insert({
         "application_id": id,
         "jd_raw": data.jd_raw,
         "jr_raw": data.jr_raw,
     }).execute()
 
-    # TODO Phase 5: Start LangGraph workflow node parse_jd_jr
-    # graph.ainvoke(initial_state, config={"configurable": {"thread_id": id}})
+    # Workflow started — graph will run until interrupt 1 (user_gap_review)
+    # Graph menjalankan: parse_jd_jr → analyze_gap → score_gap → [INTERRUPT]
+    result = await _start_workflow(
+        application_id=id,
+        user_id=str(current_user.id),
+    )
 
-    return {
-        "status": "not_implemented",
-        "message": "Workflow will be wired in Phase 5",
-    }
+    return result
 
 
 # ─── POST /applications/{id}/resume ──────────────────────────────────────────
