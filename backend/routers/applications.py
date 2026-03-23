@@ -57,3 +57,36 @@ async def verify_ownership(application_id: str, user_id: str) -> dict:
         )
 
     return response.data[0]
+
+
+# ─── POST /applications ───────────────────────────────────────────────────────
+# Membuat lamaran kerja baru
+# Status selalu dimulai dari "draft" — tidak bisa diset oleh user saat create
+
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=ApplicationResponse)
+async def create_application(
+    data: ApplicationCreate,
+    current_user=Depends(get_current_user),
+):
+    """
+    Create a new job application.
+    Status is always set to 'draft' on creation regardless of what user sends.
+    user_id is injected from the authenticated session.
+    """
+    supabase = get_supabase()
+
+    # Bangun payload — user_id dari session, status selalu "draft"
+    payload = {
+        "company_name": data.company_name,
+        "position": data.position,
+        "user_id": str(current_user.id),
+        "status": "draft",              # selalu draft, tidak bisa dioverride user
+    }
+
+    response = (
+        supabase.table("applications")
+        .insert(payload)
+        .execute()
+    )
+
+    return response.data[0]
