@@ -295,3 +295,212 @@ async def score_gap(state: CVAgentState) -> dict:
     )
 
     return {"gap_score": gap_score}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLUSTER 4 — Orchestrator (Planning Phase)
+# Nodes: plan_strategy, select_content (sekuensial)
+# Berjalan setelah Interrupt 1 (user approve gap analysis)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def plan_strategy(state: CVAgentState) -> dict:
+    """
+    Node 4: Generate CV Strategy Brief based on gap analysis.
+
+    Reads gap_analysis_context, gap_score, and jd_jr_context from state.
+    Produces strategy_brief — the "contract" governing all CV generation.
+    Saves brief to DB with user_approved=false (user reviews at Interrupt 2).
+
+    Input  : state.gap_analysis_context, state.gap_score, state.jd_jr_context
+    Output : state.strategy_brief, state.brief_id
+    Cluster: 4 — Planner Agent
+    """
+    application_id = state["application_id"]
+    logger.info(f"[plan_strategy] called for application_id={application_id}")
+
+    supabase = get_supabase()
+
+    # TODO Phase 6: Replace with real Planner Agent call
+    # from agents.cluster4.planner import run_planner
+    # return await run_planner(
+    #     application_id,
+    #     state["gap_analysis_context"],
+    #     state["jd_jr_context"],
+    # )
+
+    # ── Placeholder strategy_brief ────────────────────────────────────────────
+    # Brief terdiri dari tiga zona editabilitas berbeda untuk user:
+    # - Zona Merah  : content_instructions — read-only, dikelola agent
+    # - Zona Kuning : keyword_targets + narrative_instructions — bisa diedit terbatas
+    # - Zona Hijau  : primary_angle, summary_hook_direction, tone — bebas diedit
+
+    strategy_brief = {
+        # Zona Merah — komponen mana yang masuk CV dan berapa entry per komponen
+        "content_instructions": {
+            "experience": {"include": [], "top_n": 3},
+            "projects":   {"include": [], "top_n": 3},
+            "education":  {"include": [], "top_n": 2},
+            "skills":     {"include": [], "top_n": 15},
+        },
+
+        # Zona Kuning — narrative instructions untuk implicit match dan gap bridge
+        # user bisa setuju, ubah angle, atau tolak setiap item
+        "narrative_instructions": [
+            {
+                "id": "ni-001",
+                "type": "implicit_match",
+                "requirement": "Pengalaman dengan SQL",
+                "matched_with": "MySQL experience",
+                "suggested_angle": "Narrasikan sebagai SQL proficiency — MySQL adalah implementasi SQL",
+                "user_decision": None,  # None = belum diputuskan user
+            }
+        ],
+
+        # Zona Kuning — keyword yang harus muncul secara natural di CV
+        "keyword_targets": ["Python", "data analysis", "SQL"],
+
+        # Zona Hijau — bebas diedit user tanpa batasan
+        "primary_angle": "Data professional dengan kemampuan teknis yang kuat",
+        "summary_hook_direction": "Buka dengan posisi sebagai data professional yang menggabungkan kemampuan teknis dengan komunikasi bisnis",
+        "tone": "technical_concise",
+
+        # Selalu false saat pertama dibuat — menjadi true setelah user approve di Interrupt 2
+        "user_approved": False,
+    }
+
+    # ── Simpan ke DB dan capture generated brief_id ───────────────────────────
+    # brief_id dibutuhkan oleh select_content node untuk membuat relasi
+    # di selected_content_packages table
+    response = supabase.table("cv_strategy_briefs").insert({
+        "application_id": application_id,
+        "content_instructions": strategy_brief["content_instructions"],
+        "narrative_instructions": strategy_brief["narrative_instructions"],
+        "keyword_targets": strategy_brief["keyword_targets"],
+        "primary_angle": strategy_brief["primary_angle"],
+        "summary_hook_direction": strategy_brief["summary_hook_direction"],
+        "tone": strategy_brief["tone"],
+        "user_approved": False,
+    }).execute()
+
+    # Ambil UUID yang di-generate DB untuk brief ini
+    brief_id = response.data[0]["id"]
+
+    logger.info(
+        f"[plan_strategy] saved strategy brief to DB: brief_id={brief_id}"
+    )
+
+    # Return dua field sekaligus — strategy_brief untuk content, brief_id untuk relasi
+    return {
+        "strategy_brief": strategy_brief,
+        "brief_id": brief_id,
+    }
+
+
+async def select_content(state: CVAgentState) -> dict:
+    """
+    Node 5: Select which Master Data entries will appear in the CV.
+
+    Reads strategy_brief from state (already user-approved at Interrupt 2).
+    Queries Master Data DB for experience and projects entries.
+    Adds bullet_quota to each entry, saves package to DB.
+
+    Input  : state.strategy_brief, state.brief_id, state.user_id
+    Output : state.selected_content_package
+    Cluster: 4 — Selection Agent
+    """
+    application_id = state["application_id"]
+    user_id = state["user_id"]
+    brief_id = state["brief_id"]
+    logger.info(f"[select_content] called for application_id={application_id}")
+
+    supabase = get_supabase()
+
+    # TODO Phase 6: Replace with real Selection Agent call
+    # from agents.cluster4.selection import run_selection
+    # return {"selected_content_package": await run_selection(
+    #     application_id, user_id, state["strategy_brief"]
+    # )}
+
+    # ── Query Master Data — ambil entry nyata dari DB user ────────────────────
+    # Ini bukan placeholder — kita benar-benar query data milik user
+    # Hasilnya mungkin kosong kalau user belum mengisi profil, dan itu OK
+    # Selection Agent di Phase 6 akan melakukan ranking dan filtering yang lebih cerdas
+
+    # Ambil maksimal 3 experience entries milik user ini
+    exp_response = (
+        supabase.table("experience")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(3)
+        .execute()
+    )
+
+    # Ambil maksimal 3 projects entries milik user ini
+    proj_response = (
+        supabase.table("projects")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(3)
+        .execute()
+    )
+
+    # ── Tambahkan bullet_quota ke setiap entry ─────────────────────────────────
+    # bullet_quota = 3 berarti Content Writer Agent akan menulis 3 bullet points
+    # per entry. Ini adalah instruksi untuk Cluster 5.
+    experience_entries = [
+        {**entry, "bullet_quota": 3}
+        for entry in exp_response.data
+    ]
+
+    projects_entries = [
+        {**entry, "bullet_quota": 3}
+        for entry in proj_response.data
+    ]
+
+    # ── Build selected_content_package — Context Package 4 ───────────────────
+    # brief: copy field-field yang dibutuhkan Content Writer dari strategy_brief
+    # selected_content: entry-entry yang dipilih per komponen
+    brief = state["strategy_brief"]
+
+    selected_content_package = {
+        "application_id": application_id,
+        "brief_id": brief_id,
+
+        # Subset dari strategy_brief yang dibutuhkan Content Writer Agent
+        "brief": {
+            "primary_angle": brief["primary_angle"],
+            "summary_hook_direction": brief["summary_hook_direction"],
+            "keyword_targets": brief["keyword_targets"],
+            "tone": brief["tone"],
+            "narrative_instructions": brief["narrative_instructions"],
+        },
+
+        # Entry yang dipilih — bisa kosong kalau user belum isi profil
+        "selected_content": {
+            "experience": experience_entries,
+            "projects": projects_entries,
+            "education": [],    # Phase 6: Selection Agent akan mengisi ini
+            "awards": [],
+            "organizations": [],
+            "skills": [],
+            "certificates": [],
+        },
+    }
+
+    # ── Simpan ke DB ──────────────────────────────────────────────────────────
+    # Disimpan sebagai JSONB — seluruh package dalam satu row
+    # Relasi ke brief via brief_id untuk audit trail
+    supabase.table("selected_content_packages").insert({
+        "application_id": application_id,
+        "brief_id": brief_id,
+        "content": selected_content_package,
+    }).execute()
+
+    logger.info(
+        f"[select_content] selected {len(experience_entries)} experience "
+        f"and {len(projects_entries)} projects entries for application_id={application_id}"
+    )
+
+    return {"selected_content_package": selected_content_package}

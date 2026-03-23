@@ -42,6 +42,7 @@ class CVAgentState(TypedDict):
     # Diisi oleh node plan_strategy (Planner Agent)
     # Berisi content_instructions, keyword_targets, narrative_instructions, dll
     strategy_brief: Optional[dict]
+    brief_id: Optional[str] 
 
     # Diset oleh Interrupt 2 resume
     # True → user approve brief (mungkin dengan adjustment di Zona Kuning/Hijau)
