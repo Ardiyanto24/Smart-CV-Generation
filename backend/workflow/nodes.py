@@ -889,3 +889,182 @@ async def qc_evaluate(state: CVAgentState) -> dict:
         "qc_report": qc_report,
         "qc_iteration": current_iteration,  # update counter di state
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REVISION NODES
+# Dua jalur revisi yang terpisah:
+#   Jalur A: revise_content — QC-driven, otomatis, ada batas iterasi
+#   Jalur B: apply_user_revisions — user-driven, manual, bebas iterasi
+# QC-driven harus selesai dulu sebelum user bisa melakukan user-driven revision
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def revise_content(state: CVAgentState) -> dict:
+    """
+    Node 9: Handle QC-driven revision (Jalur A).
+
+    Triggered automatically when qc_evaluate finds sections with action_required=true
+    AND qc_iteration < MAX_QC_ITERATIONS.
+
+    Reads qc_report to identify failed sections, generates revision instructions,
+    produces new cv_output version, and saves to DB.
+
+    In Phase 6: calls Revision Handler + Content Writer Agent for failed sections only,
+    running them in parallel using asyncio.gather.
+
+    Input  : state.qc_report, state.cv_output, state.cv_version, state.qc_iteration
+    Output : state.cv_output (new version), state.cv_version (incremented)
+    """
+    application_id = state["application_id"]
+    current_iteration = state["qc_iteration"]
+    new_version = state["cv_version"] + 1
+
+    logger.info(
+        f"[revise_content] called for application_id={application_id}, "
+        f"iteration={current_iteration}, new_cv_version={new_version}"
+    )
+
+    supabase = get_supabase()
+
+    # TODO Phase 6: Replace with real Revision Handler + Content Writer Agent calls
+    # from agents.cluster4.revision_handler import run_qc_revision
+    # revised_sections = await run_qc_revision(
+    #     application_id,
+    #     state["qc_report"],
+    #     state["cv_output"],
+    #     state["strategy_brief"],
+    # )
+    # Merge revised sections back into cv_output
+
+    # ── Copy cv_output lama dan tambahkan revision note ───────────────────────
+    # {**dict} membuat shallow copy — tidak mutate state langsung
+    # _revision_note adalah marker bahwa ini hasil revisi stub, bukan LLM
+    # Di Phase 6, field ini tidak ada — isinya adalah perubahan konten nyata
+    revised_cv_output = {
+        **state["cv_output"],
+        "_revision_note": f"QC-driven revision stub — iteration {current_iteration}",
+        "version": new_version,  # update version di dalam content juga
+    }
+
+    # ── Simpan versi baru ke cv_outputs ───────────────────────────────────────
+    # Tidak menimpa versi lama — insert row baru dengan version yang di-increment
+    # section_revised = "all" karena QC bisa merevisi multiple sections sekaligus
+    supabase.table("cv_outputs").insert({
+        "application_id": application_id,
+        "version": new_version,
+        "content": revised_cv_output,
+        "revision_type": "qc_driven",
+        "section_revised": "all",   # QC revisi semua section yang gagal sekaligus
+        "status": "draft",          # kembali ke draft — akan di-QC ulang
+    }).execute()
+
+    # ── Catat di revision_history ─────────────────────────────────────────────
+    # Audit trail untuk setiap instruksi revisi yang dikirim ke Cluster 5
+    # sections berisi detail instruksi — di Phase 5 hanya placeholder
+    supabase.table("revision_history").insert({
+        "application_id": application_id,
+        "revision_type": "qc_driven",
+        "iteration": current_iteration,
+        "sections": {
+            "note": f"QC-driven revision stub for iteration {current_iteration}",
+            "sections_revised": "all",
+        },
+        "status": "completed",
+    }).execute()
+
+    logger.info(
+        f"[revise_content] created new cv_output version={new_version} "
+        f"for application_id={application_id}"
+    )
+
+    return {
+        "cv_output": revised_cv_output,
+        "cv_version": new_version,
+    }
+
+
+async def apply_user_revisions(state: CVAgentState) -> dict:
+    """
+    Node 11: Handle user-driven revision (Jalur B).
+
+    Triggered when user requests revision for a specific section during CV review.
+    No iteration limit — user can revise as many times as needed.
+
+    Reads user_revision_instructions from state to know which sections to revise
+    and what changes are requested. Produces new cv_output version.
+
+    In Phase 6: calls Revision Handler + Content Writer Agent for requested sections,
+    running them in parallel using asyncio.gather.
+
+    Input  : state.user_revision_instructions, state.cv_output, state.cv_version
+    Output : state.cv_output (new version), state.cv_version (incremented)
+    """
+    application_id = state["application_id"]
+    new_version = state["cv_version"] + 1
+
+    # Ambil section keys yang diminta user untuk direvisi
+    # user_revision_instructions: { "experience": "tambahkan angka spesifik", ... }
+    revision_keys = list(state.get("user_revision_instructions", {}).keys())
+
+    logger.info(
+        f"[apply_user_revisions] called for application_id={application_id}, "
+        f"sections={revision_keys}, new_cv_version={new_version}"
+    )
+
+    supabase = get_supabase()
+
+    # TODO Phase 6: Replace with real user-driven Revision Handler call
+    # from agents.cluster4.revision_handler import run_user_revision
+    # revised_sections = await run_user_revision(
+    #     application_id,
+    #     state["user_revision_instructions"],
+    #     state["cv_output"],
+    #     state["strategy_brief"],
+    # )
+    # Merge revised sections back into cv_output
+
+    # ── Copy cv_output lama dan tambahkan revision note ───────────────────────
+    revised_cv_output = {
+        **state["cv_output"],
+        "_revision_note": f"User-driven revision stub — sections: {revision_keys}",
+        "version": new_version,
+    }
+
+    # ── Tentukan section_revised ───────────────────────────────────────────────
+    # Real implementation merevisi satu section per request
+    # Ambil key pertama dari revision instructions sebagai section yang direvisi
+    # Kalau tidak ada instruksi (edge case), set ke "unknown"
+    section_revised = revision_keys[0] if revision_keys else "unknown"
+
+    # ── Simpan versi baru ke cv_outputs ───────────────────────────────────────
+    supabase.table("cv_outputs").insert({
+        "application_id": application_id,
+        "version": new_version,
+        "content": revised_cv_output,
+        "revision_type": "user_driven",
+        "section_revised": section_revised,  # section spesifik yang direvisi user
+        "status": "draft",
+    }).execute()
+
+    # ── Catat di revision_history ─────────────────────────────────────────────
+    supabase.table("revision_history").insert({
+        "application_id": application_id,
+        "revision_type": "user_driven",
+        "iteration": 1,     # user-driven tidak punya iteration counter
+        "sections": {
+            "note": f"User-driven revision stub",
+            "sections_requested": revision_keys,
+            "instructions": state.get("user_revision_instructions", {}),
+        },
+        "status": "completed",
+    }).execute()
+
+    logger.info(
+        f"[apply_user_revisions] created new cv_output version={new_version} "
+        f"for application_id={application_id}, section_revised={section_revised}"
+    )
+
+    return {
+        "cv_output": revised_cv_output,
+        "cv_version": new_version,
+    }
