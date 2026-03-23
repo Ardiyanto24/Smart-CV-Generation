@@ -1068,3 +1068,120 @@ async def apply_user_revisions(state: CVAgentState) -> dict:
         "cv_output": revised_cv_output,
         "cv_version": new_version,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BEST VERSION SELECTION
+# Node: select_best_version
+# Dipanggil ketika MAX_QC_ITERATIONS habis dan masih ada section yang gagal
+# Ini adalah SATU-SATUNYA node yang fully implemented di Phase 5 — tidak ada stub
+# Logicnya murni deterministik (DB query + kalkulasi), tidak butuh LLM
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def select_best_version(state: CVAgentState) -> dict:
+    """
+    Node: Select the best CV version when MAX_QC_ITERATIONS is exhausted.
+
+    Instead of presenting the last version (which may not be the best due to
+    oscillation between ATS and Semantic scores), this node finds the version
+    with the highest average combined_score across all sections.
+
+    combined_score per section = (ats_score × weight_ats) + (semantic_score × weight_semantic)
+    Best version = cv_version with highest AVERAGE combined_score across all its sections.
+
+    This node is FULLY IMPLEMENTED in Phase 5 — no stub, no LLM calls.
+    Pure deterministic logic: DB queries + arithmetic.
+
+    Input  : state.application_id (to query qc_results and cv_outputs)
+    Output : state.cv_output (best version content), state.cv_version (best version number)
+    """
+    application_id = state["application_id"]
+    logger.info(
+        f"[select_best_version] called for application_id={application_id} "
+        f"— MAX_QC_ITERATIONS reached, selecting best version"
+    )
+
+    supabase = get_supabase()
+
+    # ── Query semua QC results untuk application ini ───────────────────────────
+    # Butuh combined_score per section per version untuk menghitung rata-rata
+    qc_response = (
+        supabase.table("qc_results")
+        .select("cv_version, combined_score")
+        .eq("application_id", application_id)
+        .execute()
+    )
+
+    if not qc_response.data:
+        # Edge case: tidak ada QC data — fallback ke cv_version saat ini
+        logger.warning(
+            f"[select_best_version] no qc_results found for application_id={application_id}, "
+            f"falling back to current cv_version={state['cv_version']}"
+        )
+        return {
+            "cv_output": state["cv_output"],
+            "cv_version": state["cv_version"],
+        }
+
+    # ── Hitung average combined_score per cv_version ───────────────────────────
+    # Struktur: { cv_version: [score1, score2, ...] }
+    version_scores: dict[int, list[float]] = {}
+
+    for row in qc_response.data:
+        version = row["cv_version"]
+        score = row["combined_score"] or 0.0   # None → 0.0 kalau combined_score belum dihitung
+
+        if version not in version_scores:
+            version_scores[version] = []
+        version_scores[version].append(score)
+
+    # Hitung rata-rata per version
+    # { cv_version: average_combined_score }
+    version_averages = {
+        version: sum(scores) / len(scores)
+        for version, scores in version_scores.items()
+    }
+
+    # ── Pilih version dengan average combined_score tertinggi ─────────────────
+    best_version = max(version_averages, key=lambda v: version_averages[v])
+    best_score = version_averages[best_version]
+
+    logger.info(
+        f"[select_best_version] version scores: {version_averages} | "
+        f"selected version={best_version} with avg_combined_score={best_score:.2f}"
+    )
+
+    # ── Query cv_outputs untuk mendapatkan content dari best version ───────────
+    cv_response = (
+        supabase.table("cv_outputs")
+        .select("content")
+        .eq("application_id", application_id)
+        .eq("version", best_version)
+        .limit(1)
+        .execute()
+    )
+
+    if not cv_response.data:
+        # Edge case: version ada di qc_results tapi tidak ada di cv_outputs
+        # Ini seharusnya tidak terjadi — log error dan fallback ke current version
+        logger.error(
+            f"[select_best_version] cv_output for best_version={best_version} "
+            f"not found in DB — falling back to current cv_version={state['cv_version']}"
+        )
+        return {
+            "cv_output": state["cv_output"],
+            "cv_version": state["cv_version"],
+        }
+
+    best_cv_output = cv_response.data[0]["content"]
+
+    logger.info(
+        f"[select_best_version] selected cv_version={best_version} "
+        f"(avg_combined_score={best_score:.2f}) to present to user"
+    )
+
+    # Return best version — bukan versi terakhir
+    return {
+        "cv_output": best_cv_output,
+        "cv_version": best_version,
+    }
