@@ -8,6 +8,9 @@ from slowapi.errors import RateLimitExceeded
 from db.limiter import limiter
 from routers.auth import router as auth_router
 from routers.profile import router as profile_router
+from routers.applications import router as applications_router  # baru
+from routers.workflow import router as workflow_router          # baru
+from routers.output import router as output_router              # baru
 
 
 @asynccontextmanager
@@ -40,8 +43,13 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
+# Urutan penting — applications harus sebelum workflow dan output
+# karena ketiganya share prefix /applications
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(profile_router)
+app.include_router(applications_router)  # baru
+app.include_router(workflow_router)      # baru
+app.include_router(output_router)        # baru
 
 # ── Health Check ──────────────────────────────────────────────────────────────
 @app.get("/health")
