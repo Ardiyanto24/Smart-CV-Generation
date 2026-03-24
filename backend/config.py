@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     # ── Auth ──────────────────────────────────────────────
     auth_cookie_name: str = "cv_agent_session"
 
+    # ── LLM Model ───────────────────────────────────────
+    llm_model: str = "claude-sonnet-4-5"
+
 
 @functools.lru_cache
 def get_settings() -> Settings:
