@@ -24,6 +24,8 @@ from workflow.state import CVAgentState
 from workflow.retry import with_retry
 
 from agents.cluster2.parser import run_parser
+from agents.cluster3.gap_analyzer import fetch_master_data, run_gap_analyzer
+from agents.cluster3.scoring import run_scoring
 
 # ── Logger ────────────────────────────────────────────────────────────────────
 # Module-level logger — dipakai oleh semua node di file ini
@@ -44,8 +46,7 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
     Node 1: Parse raw JD/JR text into structured atomic requirement items.
 
     Reads raw JD/JR from job_postings table, calls Parser Agent to decompose
-    into atomic items, saves to job_descriptions and job_requirements tables,
-    and returns structured jd_jr_context (Context Package 2).
+    into atomic items, and returns structured jd_jr_context (Context Package 2).
 
     Input  : state.application_id
     Output : state.jd_jr_context
@@ -56,8 +57,8 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
 
     supabase = get_supabase()
 
-    # Query raw JD/JR dari job_postings table
-    # Disimpan sebelumnya oleh POST /applications/{id}/start endpoint
+    # Query raw JD/JR yang sudah disimpan oleh POST /applications/{id}/start
+    # Di Phase 6, data ini akan dikirim ke Parser Agent untuk diproses
     response = (
         supabase.table("job_postings")
         .select("jd_raw, jr_raw")
@@ -67,37 +68,76 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
         .execute()
     )
 
-    if not response.data:
-        raise ValueError(
-            f"No job_posting found for application_id={application_id}. "
-            f"Ensure POST /applications/{application_id}/start was called first."
+    # Log apa yang ditemukan di DB untuk membantu debugging
+    if response.data:
+        logger.info(
+            f"[parse_jd_jr] found job_posting for application_id={application_id}"
+        )
+    else:
+        logger.warning(
+            f"[parse_jd_jr] no job_posting found for application_id={application_id}"
         )
 
-    job_posting = response.data[0]
-    jd_raw = job_posting.get("jd_raw")
-    jr_raw = job_posting.get("jr_raw")
+    @with_retry
+    async def parse_jd_jr(state: CVAgentState) -> dict:
+        """
+        Node 1: Parse raw JD/JR text into structured atomic requirement items.
 
-    logger.info(
-        f"[parse_jd_jr] found job_posting — "
-        f"jd_raw={'present' if jd_raw else 'empty'}, "
-        f"jr_raw={'present' if jr_raw else 'empty'}"
-    )
+        Reads raw JD/JR from job_postings table, calls Parser Agent to decompose
+        into atomic items, saves to job_descriptions and job_requirements tables,
+        and returns structured jd_jr_context (Context Package 2).
 
-    # Panggil Parser Agent — dekomposisi, priority detection, deduplikasi
-    # Hasil langsung disimpan ke job_descriptions dan job_requirements tables
-    jd_jr_context = await run_parser(
-        application_id=application_id,
-        jd_raw=jd_raw,
-        jr_raw=jr_raw,
-    )
+        Input  : state.application_id
+        Output : state.jd_jr_context
+        Cluster: 2 — Parser Agent
+        """
+        application_id = state["application_id"]
+        logger.info(f"[parse_jd_jr] called for application_id={application_id}")
 
-    logger.info(
-        f"[parse_jd_jr] parsing complete: "
-        f"{len(jd_jr_context['job_descriptions'])} JD items, "
-        f"{len(jd_jr_context['job_requirements'])} JR items"
-    )
+        supabase = get_supabase()
 
-    return {"jd_jr_context": jd_jr_context}
+        # Query raw JD/JR dari job_postings table
+        # Disimpan sebelumnya oleh POST /applications/{id}/start endpoint
+        response = (
+            supabase.table("job_postings")
+            .select("jd_raw, jr_raw")
+            .eq("application_id", application_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if not response.data:
+            raise ValueError(
+                f"No job_posting found for application_id={application_id}. "
+                f"Ensure POST /applications/{application_id}/start was called first."
+            )
+
+        job_posting = response.data[0]
+        jd_raw = job_posting.get("jd_raw")
+        jr_raw = job_posting.get("jr_raw")
+
+        logger.info(
+            f"[parse_jd_jr] found job_posting — "
+            f"jd_raw={'present' if jd_raw else 'empty'}, "
+            f"jr_raw={'present' if jr_raw else 'empty'}"
+        )
+
+        # Panggil Parser Agent — dekomposisi, priority detection, deduplikasi
+        # Hasil langsung disimpan ke job_descriptions dan job_requirements tables
+        jd_jr_context = await run_parser(
+            application_id=application_id,
+            jd_raw=jd_raw,
+            jr_raw=jr_raw,
+        )
+
+        logger.info(
+            f"[parse_jd_jr] parsing complete: "
+            f"{len(jd_jr_context['job_descriptions'])} JD items, "
+            f"{len(jd_jr_context['job_requirements'])} JR items"
+        )
+
+        return {"jd_jr_context": jd_jr_context}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -119,93 +159,36 @@ async def analyze_gap(state: CVAgentState) -> dict:
     Cluster: 3 — Gap Analyzer Agent
     """
     application_id = state["application_id"]
+    user_id = state["user_id"]
     logger.info(f"[analyze_gap] called for application_id={application_id}")
 
-    supabase = get_supabase()
+    # Fetch semua Master Data user — dibutuhkan oleh Gap Analyzer Agent
+    # fetch_master_data query 7 tabel sekaligus dan return Context Package 1
+    master_data = await fetch_master_data(user_id)
 
-    # TODO Phase 6: Replace with real Gap Analyzer Agent call
-    # from agents.cluster3.gap_analyzer import fetch_master_data, run_gap_analyzer
-    # master_data = await fetch_master_data(state["user_id"])
-    # results = await run_gap_analyzer(application_id, state["jd_jr_context"], master_data)
+    logger.info(
+        f"[analyze_gap] master data fetched, "
+        f"calling Gap Analyzer Agent for application_id={application_id}"
+    )
 
-    # ── Placeholder gap_analysis_context ──────────────────────────────────────
-    # Struktur harus persis Context Package 3
-    # Minimal dua item: satu exact_match dan satu gap
-    # Downstream nodes (score_gap, plan_strategy) membaca dari results list ini
+    # Panggil Gap Analyzer Agent — analisis semua JD/JR items dalam satu LLM call
+    # results adalah list of gap analysis objects (exact_match/implicit_match/gap)
+    # Agent juga bulk-insert semua results ke gap_analysis_results table
+    results = await run_gap_analyzer(
+        application_id=application_id,
+        jd_jr_context=state["jd_jr_context"],
+        master_data=master_data,
+    )
 
-    results = [
-        {
-            # exact_match: ada bukti eksplisit di Master Data
-            "item_id": "r001",
-            "text": "Menguasai Python",
-            "dimension": "JR",
-            "category": "exact_match",
-            "priority": "must",
-            "evidence": [
-                {
-                    "source": "skills",
-                    "entry_id": "placeholder-skill-uuid",
-                    "entry_title": "Python",
-                    "detail": "Standalone skill, is_inferred: false",
-                }
-            ],
-            "reasoning": None,  # exact_match tidak butuh reasoning
-        },
-        {
-            # implicit_match: ada bukti transferable — MySQL → SQL
-            "item_id": "r002",
-            "text": "Pengalaman dengan SQL",
-            "dimension": "JR",
-            "category": "implicit_match",
-            "priority": "must",
-            "evidence": [
-                {
-                    "source": "experience",
-                    "entry_id": "placeholder-exp-uuid",
-                    "entry_title": "PT Contoh Indonesia",
-                    "detail": "MySQL tercantum di skills_used",
-                }
-            ],
-            # reasoning wajib ada untuk implicit_match — menjelaskan koneksi transferable
-            "reasoning": "MySQL adalah implementasi SQL — kemampuan query relasional dapat ditransfer langsung",
-        },
-        {
-            # gap: tidak ada bukti di Master Data sama sekali
-            "item_id": "r003",
-            "text": "Pengalaman dengan AWS atau GCP",
-            "dimension": "JR",
-            "category": "gap",
-            "priority": "nice_to_have",
-            "evidence": [],  # kosong untuk gap
-            "reasoning": None,
-        },
-    ]
-
+    # Build gap_analysis_context — Context Package 3
+    # Dibaca oleh score_gap node dan plan_strategy node downstream
     gap_analysis_context = {
         "application_id": application_id,
         "results": results,
     }
 
-    # ── Simpan setiap result item ke DB ────────────────────────────────────────
-    # Satu row per item — dibutuhkan oleh GET /applications/{id}/gap endpoint
-    # dan oleh Planner Agent di Phase 6 untuk membuat CV Strategy Brief
-    for item in results:
-        supabase.table("gap_analysis_results").insert({
-            "application_id": application_id,
-            "item_id": item["item_id"],
-            "text": item["text"],
-            "dimension": item["dimension"],
-            "category": item["category"],
-            "priority": item["priority"],
-            # evidence disimpan sebagai JSONB — harus di-wrap dalam dict
-            "evidence": item["evidence"],
-            "reasoning": item["reasoning"],
-            # suggestion hanya untuk gap items — Phase 6 yang akan mengisi
-            "suggestion": None,
-        }).execute()
-
     logger.info(
-        f"[analyze_gap] saved {len(results)} gap analysis results to DB "
+        f"[analyze_gap] complete: {len(results)} items analyzed "
         f"for application_id={application_id}"
     )
 
@@ -227,41 +210,24 @@ async def score_gap(state: CVAgentState) -> dict:
     application_id = state["application_id"]
     logger.info(f"[score_gap] called for application_id={application_id}")
 
-    supabase = get_supabase()
-
-    # TODO Phase 6: Replace with real Scoring Agent call
-    # from agents.cluster3.scoring import run_scoring
-    # results = state["gap_analysis_context"]["results"]
-    # return {"gap_score": await run_scoring(application_id, results)}
-
-    # ── Placeholder gap_score ─────────────────────────────────────────────────
-    # Nilai 72.0 → verdict "cukup_cocok" (range 50-74)
-    # proceed_recommendation "lanjut" → workflow melanjutkan ke plan_strategy
-    # Kalau "tinjau" → user disarankan kembali update profil dulu
-    gap_score = {
-        "quantitative_score": 72.0,
-        "verdict": "cukup_cocok",
-        "strength": "Kompetensi teknis core (Python, SQL) kuat dan exact match dengan requirements utama",
-        "concern": "Gap di beberapa requirement nice_to_have seperti cloud platform experience",
-        "recommendation": "Lanjutkan generate CV, pastikan narasi menjembatani gap yang ada",
-        "proceed_recommendation": "lanjut",
-    }
-
-    # ── Simpan ke DB ──────────────────────────────────────────────────────────
-    # Satu row per application — dibutuhkan oleh GET /applications/{id}/gap endpoint
-    # Relasi one-to-one dengan applications table (satu application, satu score)
-    supabase.table("gap_analysis_scores").insert({
-        "application_id": application_id,
-        "quantitative_score": gap_score["quantitative_score"],
-        "verdict": gap_score["verdict"],
-        "strength": gap_score["strength"],
-        "concern": gap_score["concern"],
-        "recommendation": gap_score["recommendation"],
-        "proceed_recommendation": gap_score["proceed_recommendation"],
-    }).execute()
+    # Extract results list dari gap_analysis_context
+    # run_scoring hanya butuh list of gap result objects, bukan full context dict
+    gap_results = state["gap_analysis_context"]["results"]
 
     logger.info(
-        f"[score_gap] saved gap score to DB: "
+        f"[score_gap] calling Scoring Agent with {len(gap_results)} gap results "
+        f"for application_id={application_id}"
+    )
+
+    # Panggil Scoring Agent — Part 1 deterministik + Part 2 LLM as Judge
+    # Agent juga menyimpan hasil ke gap_analysis_scores table
+    gap_score = await run_scoring(
+        application_id=application_id,
+        gap_results=gap_results,
+    )
+
+    logger.info(
+        f"[score_gap] scoring complete: "
         f"score={gap_score['quantitative_score']}, "
         f"verdict={gap_score['verdict']}, "
         f"proceed={gap_score['proceed_recommendation']}"
@@ -1031,7 +997,7 @@ async def apply_user_revisions(state: CVAgentState) -> dict:
         "revision_type": "user_driven",
         "iteration": 1,     # user-driven tidak punya iteration counter
         "sections": {
-            "note": "User-driven revision stub",
+            "note": f"User-driven revision stub",
             "sections_requested": revision_keys,
             "instructions": state.get("user_revision_instructions", {}),
         },
