@@ -15,6 +15,7 @@ Phase 5: semua node adalah stubs dengan placeholder data berstruktur benar.
 Phase 6: setiap stub diganti dengan real LLM agent call.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -29,6 +30,9 @@ from agents.cluster3.scoring import run_scoring
 from agents.cluster4.planner import run_planner
 from agents.cluster4.selection import run_selection
 from agents.cluster4.revision_handler import run_qc_revision, run_user_revision
+from agents.cluster5.content_writer import write_component_bullets
+from agents.cluster5.skills_grouping import group_skills
+from agents.cluster5.summary_writer import write_summary
 
 # ── Logger ────────────────────────────────────────────────────────────────────
 # Module-level logger — dipakai oleh semua node di file ini
@@ -321,170 +325,210 @@ async def generate_content(state: CVAgentState) -> dict:
     )
 
     supabase = get_supabase()
-
-    # TODO Phase 6: Replace with real Content Writer + Skills Grouping + Summary Writer Agent calls
-    # Fase 1: pass-through assembly dari Master Data
-    # Fase 2: asyncio.gather per komponen — Content Writer Agent
-    # Fase 3: Skills Grouping Agent
-    # Fase 4: Summary Writer Agent (setelah semua section selesai)
-
-    # ── Placeholder cv_output ─────────────────────────────────────────────────
-    # Struktur harus persis Final Structured Output JSON (cluster5_specification Section 8)
-    # Urutan section fixed: header → summary → experience → education →
-    #                       awards → skills → projects → certificates → organizations
-
+    settings = get_settings()
+    selected_package = state["selected_content_package"]
+    brief = selected_package["brief"]
+    selected_content = selected_package["selected_content"]
     generated_at = datetime.now(timezone.utc).isoformat()
 
-    cv_output = {
-        "application_id": application_id,
-        "version": cv_version,
-        "generated_at": generated_at,
+    # ── Phase 1: Pass-through assembly ────────────────────────────────────────
+    # Query user data untuk header — name dan contact info
+    user_response = (
+        supabase.table("users")
+        .select("full_name, email, phone, linkedin_url, github_url, portfolio_url")
+        .eq("id", state["user_id"])
+        .limit(1)
+        .execute()
+    )
 
-        # ── Header: pass-through dari Master Data (non-generated) ─────────────
-        # Di Phase 6 diambil dari tabel users dan kontak user
-        "header": {
-            "name": "Placeholder Name",
-            "email": "placeholder@email.com",
-            "phone": "+62812345678",
-            "linkedin": "placeholder-linkedin",
-            "github": "placeholder-github",
-        },
+    user_data = user_response.data[0] if user_response.data else {}
 
-        # ── Summary: digenerate oleh Summary Writer Agent ─────────────────────
-        # Selalu ditulis TERAKHIR setelah semua section lain selesai
-        # agar summary benar-benar mencerminkan isi CV, bukan generik
-        "summary": (
-            "Placeholder summary — Data professional dengan pengalaman membangun "
-            "solusi analitik berbasis Python dan SQL. Terbiasa berkolaborasi dengan "
-            "stakeholder bisnis untuk menghasilkan insight yang actionable."
-        ),
+    header = {
+        "name": user_data.get("full_name", ""),
+        "email": user_data.get("email", ""),
+        "phone": user_data.get("phone", ""),
+        "linkedin": user_data.get("linkedin_url", ""),
+        "github": user_data.get("github_url", ""),
+        "portfolio": user_data.get("portfolio_url", ""),
+    }
 
-        # ── Experience: digenerate oleh Content Writer Agent ──────────────────
-        # Tiga bullet points per entry: what_i_did → challenge → impact
-        # Setiap bullet max 20 kata, diawali action verb
+    # Pass-through metadata per komponen — tidak digenerate LLM
+    # Dipakai untuk menyusun section structure sebelum bullets ditambahkan
+    pass_through = {
         "experience": [
             {
-                "entry_id": "placeholder-exp-uuid",
-                "company": "PT Contoh Indonesia",
-                "role": "Data Analyst",
-                "year": "2023 – 2024",
-                "bullets": [
-                    "Developed Python-based data pipeline processing 1M+ daily transactions for business intelligence reporting.",
-                    "Addressed data quality issues by implementing automated validation checks, reducing error rate by 40%.",
-                    "Delivered weekly SQL dashboards enabling stakeholders to monitor KPIs with 2-day faster turnaround.",
-                ],
+                "entry_id": e.get("id"),
+                "company":  e.get("company"),
+                "role":     e.get("role"),
+                "year":     e.get("year") or e.get("start_year", ""),
+                "location": e.get("location", ""),
             }
+            for e in selected_content.get("experience", [])
         ],
-
-        # ── Education: digenerate oleh Content Writer Agent ───────────────────
         "education": [
             {
-                "entry_id": "placeholder-edu-uuid",
-                "institution": "Universitas Contoh",
-                "degree": "S1 Statistika",
-                "year": "2019 – 2023",
-                "location": "Jakarta",
-                "bullets": [
-                    "Completed statistical modeling curriculum with focus on applied machine learning and data analysis.",
-                    "Addressed complex research challenges through thesis on predictive modeling for customer churn.",
-                    "Achieved GPA 3.75/4.00 while actively contributing to university data science community.",
-                ],
+                "entry_id":    e.get("id"),
+                "institution": e.get("institution"),
+                "degree":      e.get("degree"),
+                "field":       e.get("field_of_study", ""),
+                "year":        e.get("year") or e.get("start_year", ""),
+                "location":    e.get("location", ""),
+                "gpa":         e.get("gpa", ""),
             }
+            for e in selected_content.get("education", [])
         ],
-
-        # ── Awards: digenerate oleh Content Writer Agent ──────────────────────
         "awards": [
             {
-                "entry_id": "placeholder-award-uuid",
-                "title": "Best Data Project — Placeholder Competition",
-                "issuer": "Placeholder Organization",
-                "year": "2023",
-                "bullets": [
-                    "Developed winning predictive model achieving 92% accuracy on real-world dataset.",
-                    "Addressed imbalanced data challenge using SMOTE and ensemble methods.",
-                    "Delivered solution ranked 1st among 50+ competing teams nationally.",
-                ],
+                "entry_id": e.get("id"),
+                "title":    e.get("title"),
+                "issuer":   e.get("issuer", ""),
+                "year":     e.get("year", ""),
             }
+            for e in selected_content.get("awards", [])
         ],
-
-        # ── Skills: digenerate oleh Skills Grouping Agent ─────────────────────
-        # Dikelompokkan berdasarkan domain, bukan hanya kategori DB (technical/soft/tool)
-        "skills": {
-            "skills_grouped": [
-                {
-                    "group_label": "Programming Languages",
-                    "items": ["Python", "SQL", "R"],
-                },
-                {
-                    "group_label": "Libraries & Frameworks",
-                    "items": ["Pandas", "Scikit-learn", "TensorFlow"],
-                },
-                {
-                    "group_label": "Tools & Platforms",
-                    "items": ["MySQL", "Tableau", "Git"],
-                },
-                {
-                    "group_label": "Personal Strengths",
-                    "items": ["Stakeholder Communication", "Problem Solving"],
-                },
-            ]
-        },
-
-        # ── Projects: digenerate oleh Content Writer Agent ────────────────────
         "projects": [
             {
-                "entry_id": "placeholder-proj-uuid",
-                "title": "Customer Churn Prediction System",
-                "github_url": "https://github.com/placeholder/churn-prediction",
-                "tools": ["Python", "Scikit-learn", "MySQL"],
-                "bullets": [
-                    "Built end-to-end churn prediction pipeline using Random Forest with 87% accuracy.",
-                    "Addressed class imbalance (1:20 ratio) through SMOTE and threshold optimization techniques.",
-                    "Delivered automated retraining pipeline reducing manual intervention by 80% monthly.",
-                ],
+                "entry_id":   e.get("id"),
+                "title":      e.get("title"),
+                "github_url": e.get("github_url", ""),
+                "tools":      e.get("tools", e.get("skills_used", [])),
             }
+            for e in selected_content.get("projects", [])
         ],
-
-        # ── Certificates: pass-through dari Master Data (non-generated) ───────
-        # Tidak ada bullet points — hanya listing metadata
-        "certificates": [
-            {
-                "name": "Machine Learning Specialization",
-                "issuer": "Coursera — Stanford University",
-            }
-        ],
-
-        # ── Organizations: digenerate oleh Content Writer Agent ───────────────
         "organizations": [
             {
-                "entry_id": "placeholder-org-uuid",
-                "name": "Data Science Community",
-                "role": "Vice President",
-                "year": "2022",
-                "bullets": [
-                    "Led university data science community with 200+ active members across 3 faculties.",
-                    "Addressed member engagement challenges by launching weekly workshop series.",
-                    "Increased active participation by 60% within one semester through structured programs.",
-                ],
+                "entry_id": e.get("id"),
+                "name":     e.get("name"),
+                "role":     e.get("role", ""),
+                "year":     e.get("year") or e.get("start_year", ""),
             }
+            for e in selected_content.get("organizations", [])
+        ],
+        "certificates": [
+            {
+                "name":   e.get("name"),
+                "issuer": e.get("issuer", ""),
+                "year":   e.get("year", ""),
+            }
+            for e in selected_content.get("certificates", [])
         ],
     }
 
+    # ── Phase 2: Content generation ───────────────────────────────────────────
+    # Sequential across components, parallel within each component
+    # Urutan fixed: experience → education → awards → projects → organizations
+    # Skills grouping dipanggil setelah komponen narasi selesai
+
+    generated_bullets = {}
+
+    for component in ["experience", "education", "awards", "projects", "organizations"]:
+        entries = selected_content.get(component, [])
+        if entries:
+            results = await write_component_bullets(component, entries, brief)
+            # Hasil adalah list of {entry_id, component, bullets}
+            # Di-index by entry_id untuk merge mudah ke pass_through nanti
+            generated_bullets[component] = {
+                r["entry_id"]: r["bullets"]
+                for r in results
+            }
+            logger.info(
+                f"[generate_content] {component}: {len(results)} entries written"
+            )
+        else:
+            generated_bullets[component] = {}
+
+    # Skills grouping — dari selected_content skills list (flat objects)
+    skills_list = selected_content.get("skills", [])
+    skills_result = await group_skills(skills_list) if skills_list else {"skills_grouped": []}
+
+    logger.info(
+        f"[generate_content] skills grouped: "
+        f"{len(skills_result.get('skills_grouped', []))} groups"
+    )
+
+    # ── Phase 3: Assemble sections untuk Summary Writer ───────────────────────
+    # Build section dicts dengan bullets sudah di-merge ke pass_through metadata
+    # Summary Writer butuh ini untuk menulis summary yang spesifik
+
+    def merge_bullets(component_name: str) -> list:
+        """Helper: merge pass_through metadata dengan generated bullets."""
+        merged = []
+        bullets_map = generated_bullets.get(component_name, {})
+        for item in pass_through[component_name]:
+            entry_id = item["entry_id"]
+            merged.append({
+                **item,
+                "bullets": bullets_map.get(entry_id, []),
+            })
+        return merged
+
+    assembled_sections = {
+        "experience":    merge_bullets("experience"),
+        "education":     merge_bullets("education"),
+        "awards":        merge_bullets("awards"),
+        "projects":      merge_bullets("projects"),
+        "organizations": merge_bullets("organizations"),
+    }
+
+    # Summary Writer dipanggil terakhir — membaca seluruh assembled sections
+    summary = await write_summary(
+        cv_sections=assembled_sections,
+        skills_grouped=skills_result,
+        brief=brief,
+    )
+
+    logger.info("[generate_content] summary written")
+
+    # ── Phase 4: Final assembly — Final Structured Output JSON ────────────────
+    # Urutan section fixed sesuai cluster5_specification Section 8:
+    # header → summary → experience → education → awards →
+    # skills → projects → certificates → organizations
+
+    cv_output = {
+        "application_id": application_id,
+        "version":        cv_version,
+        "generated_at":   generated_at,
+
+        # ── Header: pass-through dari users table ──────────────────────────────
+        "header": header,
+
+        # ── Summary: digenerate oleh Summary Writer (selalu terakhir) ─────────
+        "summary": summary,
+
+        # ── Experience: pass-through metadata + generated bullets ──────────────
+        "experience": assembled_sections["experience"],
+
+        # ── Education: pass-through metadata + generated bullets ───────────────
+        "education": assembled_sections["education"],
+
+        # ── Awards: pass-through metadata + generated bullets ──────────────────
+        "awards": assembled_sections["awards"],
+
+        # ── Skills: output dari Skills Grouping Agent ──────────────────────────
+        "skills": skills_result,
+
+        # ── Projects: pass-through metadata + generated bullets ────────────────
+        "projects": assembled_sections["projects"],
+
+        # ── Certificates: pass-through saja — tidak ada bullets ────────────────
+        "certificates": pass_through["certificates"],
+
+        # ── Organizations: pass-through metadata + generated bullets ───────────
+        "organizations": assembled_sections["organizations"],
+    }
+
     # ── Simpan ke cv_outputs table ────────────────────────────────────────────
-    # version dari state — dimulai dari 1, naik setiap revisi
-    # revision_type "initial" — ini adalah versi pertama, bukan hasil revisi
-    # status "draft" — akan berubah menjadi "qc_passed" setelah QC evaluate
     supabase.table("cv_outputs").insert({
         "application_id": application_id,
-        "version": cv_version,
-        "content": cv_output,
-        "revision_type": "initial",
+        "version":        cv_version,
+        "content":        cv_output,
+        "revision_type":  "initial",
         "section_revised": None,    # None = seluruh CV digenerate, bukan satu section
-        "status": "draft",
+        "status":         "draft",
     }).execute()
 
     logger.info(
-        f"[generate_content] saved cv_output to DB: "
+        f"[generate_content] cv_output saved: "
         f"version={cv_version}, revision_type=initial, status=draft"
     )
 
