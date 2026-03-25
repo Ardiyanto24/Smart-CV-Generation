@@ -3,30 +3,28 @@
 """
 Shared Anthropic LLM client untuk semua agents di CV Agent system.
 
-Menyediakan:
-- `llm` — singleton Anthropic client, diinisialisasi sekali saat import
-- `call_llm()` — helper async function untuk semua LLM calls
-
-Semua agents mengimport dari module ini — tidak ada yang membuat
-client instance sendiri. Ini memastikan:
-1. API key hanya dibaca sekali dari config
-2. Connection pooling yang efisien
-3. Mudah mock saat testing
+Menggunakan Google Cloud Vertex AI sebagai provider.
+Autentikasi via Application Default Credentials (ADC).
 """
 
+import functools
 import logging
 
-import anthropic
-
+from anthropic import AnthropicVertex
 from config import get_settings
 
 logger = logging.getLogger("agents.llm_client")
 
-# ── Singleton Anthropic Client ────────────────────────────────────────────────
-# Dibuat sekali saat module di-import, dipakai oleh semua agents
-# API key dibaca dari config yang membaca dari .env
-settings = get_settings()
-llm = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+GCP_PROJECT_ID = "project-6f8e6637-365a-44b6-b0a"
+GCP_REGION = "us-east5"
+
+
+@functools.lru_cache
+def _get_client() -> AnthropicVertex:
+    return AnthropicVertex(
+        project_id=GCP_PROJECT_ID,
+        region=GCP_REGION,
+    )
 
 
 async def call_llm(
@@ -34,28 +32,9 @@ async def call_llm(
     user_prompt: str,
     max_tokens: int = 1000,
 ) -> str:
-    """
-    Helper function untuk semua LLM calls di CV Agent.
+    settings = get_settings()
+    client = _get_client()
 
-    Memanggil Anthropic Claude API dengan system prompt dan user prompt,
-    dan mengembalikan text content dari response.
-
-    Exception handling TIDAK dilakukan di sini — setiap caller node
-    sudah dibungkus dengan @with_retry decorator yang menangani
-    retry logic dan logging untuk semua Anthropic API exceptions.
-
-    Args:
-        system_prompt: instruksi untuk model (role, format output, constraints)
-        user_prompt: input data yang akan diproses model
-        max_tokens: maksimal token dalam response (default 1000)
-
-    Returns:
-        String text content dari response model
-
-    Raises:
-        anthropic.APIError: kalau API call gagal — dibiarkan propagate
-                           ke @with_retry decorator di caller
-    """
     logger.debug(
         f"[call_llm] calling model={settings.llm_model}, "
         f"max_tokens={max_tokens}, "
@@ -63,25 +42,13 @@ async def call_llm(
         f"user_prompt_len={len(user_prompt)}"
     )
 
-    # Anthropic Python SDK — synchronous call
-    # Di Phase 6 kita pakai sync client karena Anthropic SDK
-    # belum stabil untuk full async di semua environments
-    # Kalau perlu async, bisa wrap dengan asyncio.to_thread()
-    response = llm.messages.create(
-        model=settings.llm_model,          # dari config — tidak hardcode
+    response = client.messages.create(
+        model=settings.llm_model,
         max_tokens=max_tokens,
-        system=system_prompt,               # instruksi dan constraints untuk model
-        messages=[
-            {
-                "role": "user",
-                "content": user_prompt,     # data yang diproses
-            }
-        ],
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
     )
 
-    # Ekstrak text dari content block pertama
-    # response.content adalah list — ambil index 0
-    # .text adalah text content dari TextBlock
     text_content = response.content[0].text
 
     logger.debug(
