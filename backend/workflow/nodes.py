@@ -44,7 +44,8 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
     Node 1: Parse raw JD/JR text into structured atomic requirement items.
 
     Reads raw JD/JR from job_postings table, calls Parser Agent to decompose
-    into atomic items, and returns structured jd_jr_context (Context Package 2).
+    into atomic items, saves to job_descriptions and job_requirements tables,
+    and returns structured jd_jr_context (Context Package 2).
 
     Input  : state.application_id
     Output : state.jd_jr_context
@@ -55,8 +56,8 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
 
     supabase = get_supabase()
 
-    # Query raw JD/JR yang sudah disimpan oleh POST /applications/{id}/start
-    # Di Phase 6, data ini akan dikirim ke Parser Agent untuk diproses
+    # Query raw JD/JR dari job_postings table
+    # Disimpan sebelumnya oleh POST /applications/{id}/start endpoint
     response = (
         supabase.table("job_postings")
         .select("jd_raw, jr_raw")
@@ -66,76 +67,37 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
         .execute()
     )
 
-    # Log apa yang ditemukan di DB untuk membantu debugging
-    if response.data:
-        logger.info(
-            f"[parse_jd_jr] found job_posting for application_id={application_id}"
-        )
-    else:
-        logger.warning(
-            f"[parse_jd_jr] no job_posting found for application_id={application_id}"
+    if not response.data:
+        raise ValueError(
+            f"No job_posting found for application_id={application_id}. "
+            f"Ensure POST /applications/{application_id}/start was called first."
         )
 
-    @with_retry
-    async def parse_jd_jr(state: CVAgentState) -> dict:
-        """
-        Node 1: Parse raw JD/JR text into structured atomic requirement items.
+    job_posting = response.data[0]
+    jd_raw = job_posting.get("jd_raw")
+    jr_raw = job_posting.get("jr_raw")
 
-        Reads raw JD/JR from job_postings table, calls Parser Agent to decompose
-        into atomic items, saves to job_descriptions and job_requirements tables,
-        and returns structured jd_jr_context (Context Package 2).
+    logger.info(
+        f"[parse_jd_jr] found job_posting — "
+        f"jd_raw={'present' if jd_raw else 'empty'}, "
+        f"jr_raw={'present' if jr_raw else 'empty'}"
+    )
 
-        Input  : state.application_id
-        Output : state.jd_jr_context
-        Cluster: 2 — Parser Agent
-        """
-        application_id = state["application_id"]
-        logger.info(f"[parse_jd_jr] called for application_id={application_id}")
+    # Panggil Parser Agent — dekomposisi, priority detection, deduplikasi
+    # Hasil langsung disimpan ke job_descriptions dan job_requirements tables
+    jd_jr_context = await run_parser(
+        application_id=application_id,
+        jd_raw=jd_raw,
+        jr_raw=jr_raw,
+    )
 
-        supabase = get_supabase()
+    logger.info(
+        f"[parse_jd_jr] parsing complete: "
+        f"{len(jd_jr_context['job_descriptions'])} JD items, "
+        f"{len(jd_jr_context['job_requirements'])} JR items"
+    )
 
-        # Query raw JD/JR dari job_postings table
-        # Disimpan sebelumnya oleh POST /applications/{id}/start endpoint
-        response = (
-            supabase.table("job_postings")
-            .select("jd_raw, jr_raw")
-            .eq("application_id", application_id)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-
-        if not response.data:
-            raise ValueError(
-                f"No job_posting found for application_id={application_id}. "
-                f"Ensure POST /applications/{application_id}/start was called first."
-            )
-
-        job_posting = response.data[0]
-        jd_raw = job_posting.get("jd_raw")
-        jr_raw = job_posting.get("jr_raw")
-
-        logger.info(
-            f"[parse_jd_jr] found job_posting — "
-            f"jd_raw={'present' if jd_raw else 'empty'}, "
-            f"jr_raw={'present' if jr_raw else 'empty'}"
-        )
-
-        # Panggil Parser Agent — dekomposisi, priority detection, deduplikasi
-        # Hasil langsung disimpan ke job_descriptions dan job_requirements tables
-        jd_jr_context = await run_parser(
-            application_id=application_id,
-            jd_raw=jd_raw,
-            jr_raw=jr_raw,
-        )
-
-        logger.info(
-            f"[parse_jd_jr] parsing complete: "
-            f"{len(jd_jr_context['job_descriptions'])} JD items, "
-            f"{len(jd_jr_context['job_requirements'])} JR items"
-        )
-
-        return {"jd_jr_context": jd_jr_context}
+    return {"jd_jr_context": jd_jr_context}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1069,7 +1031,7 @@ async def apply_user_revisions(state: CVAgentState) -> dict:
         "revision_type": "user_driven",
         "iteration": 1,     # user-driven tidak punya iteration counter
         "sections": {
-            "note": f"User-driven revision stub",
+            "note": "User-driven revision stub",
             "sections_requested": revision_keys,
             "instructions": state.get("user_revision_instructions", {}),
         },
