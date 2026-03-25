@@ -26,6 +26,9 @@ from workflow.retry import with_retry
 from agents.cluster2.parser import run_parser
 from agents.cluster3.gap_analyzer import fetch_master_data, run_gap_analyzer
 from agents.cluster3.scoring import run_scoring
+from agents.cluster4.planner import run_planner
+from agents.cluster4.selection import run_selection
+from agents.cluster4.revision_handler import run_qc_revision, run_user_revision
 
 # ── Logger ────────────────────────────────────────────────────────────────────
 # Module-level logger — dipakai oleh semua node di file ini
@@ -57,8 +60,8 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
 
     supabase = get_supabase()
 
-    # Query raw JD/JR yang sudah disimpan oleh POST /applications/{id}/start
-    # Di Phase 6, data ini akan dikirim ke Parser Agent untuk diproses
+    # Query raw JD/JR dari job_postings table
+    # Disimpan sebelumnya oleh POST /applications/{id}/start endpoint
     response = (
         supabase.table("job_postings")
         .select("jd_raw, jr_raw")
@@ -68,76 +71,37 @@ async def parse_jd_jr(state: CVAgentState) -> dict:
         .execute()
     )
 
-    # Log apa yang ditemukan di DB untuk membantu debugging
-    if response.data:
-        logger.info(
-            f"[parse_jd_jr] found job_posting for application_id={application_id}"
-        )
-    else:
-        logger.warning(
-            f"[parse_jd_jr] no job_posting found for application_id={application_id}"
+    if not response.data:
+        raise ValueError(
+            f"No job_posting found for application_id={application_id}. "
+            f"Ensure POST /applications/{application_id}/start was called first."
         )
 
-    @with_retry
-    async def parse_jd_jr(state: CVAgentState) -> dict:
-        """
-        Node 1: Parse raw JD/JR text into structured atomic requirement items.
+    job_posting = response.data[0]
+    jd_raw = job_posting.get("jd_raw")
+    jr_raw = job_posting.get("jr_raw")
 
-        Reads raw JD/JR from job_postings table, calls Parser Agent to decompose
-        into atomic items, saves to job_descriptions and job_requirements tables,
-        and returns structured jd_jr_context (Context Package 2).
+    logger.info(
+        f"[parse_jd_jr] found job_posting — "
+        f"jd_raw={'present' if jd_raw else 'empty'}, "
+        f"jr_raw={'present' if jr_raw else 'empty'}"
+    )
 
-        Input  : state.application_id
-        Output : state.jd_jr_context
-        Cluster: 2 — Parser Agent
-        """
-        application_id = state["application_id"]
-        logger.info(f"[parse_jd_jr] called for application_id={application_id}")
+    # Panggil Parser Agent — dekomposisi, priority detection, deduplikasi
+    # Hasil langsung disimpan ke job_descriptions dan job_requirements tables
+    jd_jr_context = await run_parser(
+        application_id=application_id,
+        jd_raw=jd_raw,
+        jr_raw=jr_raw,
+    )
 
-        supabase = get_supabase()
+    logger.info(
+        f"[parse_jd_jr] parsing complete: "
+        f"{len(jd_jr_context['job_descriptions'])} JD items, "
+        f"{len(jd_jr_context['job_requirements'])} JR items"
+    )
 
-        # Query raw JD/JR dari job_postings table
-        # Disimpan sebelumnya oleh POST /applications/{id}/start endpoint
-        response = (
-            supabase.table("job_postings")
-            .select("jd_raw, jr_raw")
-            .eq("application_id", application_id)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-
-        if not response.data:
-            raise ValueError(
-                f"No job_posting found for application_id={application_id}. "
-                f"Ensure POST /applications/{application_id}/start was called first."
-            )
-
-        job_posting = response.data[0]
-        jd_raw = job_posting.get("jd_raw")
-        jr_raw = job_posting.get("jr_raw")
-
-        logger.info(
-            f"[parse_jd_jr] found job_posting — "
-            f"jd_raw={'present' if jd_raw else 'empty'}, "
-            f"jr_raw={'present' if jr_raw else 'empty'}"
-        )
-
-        # Panggil Parser Agent — dekomposisi, priority detection, deduplikasi
-        # Hasil langsung disimpan ke job_descriptions dan job_requirements tables
-        jd_jr_context = await run_parser(
-            application_id=application_id,
-            jd_raw=jd_raw,
-            jr_raw=jr_raw,
-        )
-
-        logger.info(
-            f"[parse_jd_jr] parsing complete: "
-            f"{len(jd_jr_context['job_descriptions'])} JD items, "
-            f"{len(jd_jr_context['job_requirements'])} JR items"
-        )
-
-        return {"jd_jr_context": jd_jr_context}
+    return {"jd_jr_context": jd_jr_context}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -258,81 +222,26 @@ async def plan_strategy(state: CVAgentState) -> dict:
     application_id = state["application_id"]
     logger.info(f"[plan_strategy] called for application_id={application_id}")
 
-    supabase = get_supabase()
-
-    # TODO Phase 6: Replace with real Planner Agent call
-    # from agents.cluster4.planner import run_planner
-    # return await run_planner(
-    #     application_id,
-    #     state["gap_analysis_context"],
-    #     state["jd_jr_context"],
-    # )
-
-    # ── Placeholder strategy_brief ────────────────────────────────────────────
-    # Brief terdiri dari tiga zona editabilitas berbeda untuk user:
-    # - Zona Merah  : content_instructions — read-only, dikelola agent
-    # - Zona Kuning : keyword_targets + narrative_instructions — bisa diedit terbatas
-    # - Zona Hijau  : primary_angle, summary_hook_direction, tone — bebas diedit
-
-    strategy_brief = {
-        # Zona Merah — komponen mana yang masuk CV dan berapa entry per komponen
-        "content_instructions": {
-            "experience": {"include": [], "top_n": 3},
-            "projects":   {"include": [], "top_n": 3},
-            "education":  {"include": [], "top_n": 2},
-            "skills":     {"include": [], "top_n": 15},
-        },
-
-        # Zona Kuning — narrative instructions untuk implicit match dan gap bridge
-        # user bisa setuju, ubah angle, atau tolak setiap item
-        "narrative_instructions": [
-            {
-                "id": "ni-001",
-                "type": "implicit_match",
-                "requirement": "Pengalaman dengan SQL",
-                "matched_with": "MySQL experience",
-                "suggested_angle": "Narrasikan sebagai SQL proficiency — MySQL adalah implementasi SQL",
-                "user_decision": None,  # None = belum diputuskan user
-            }
-        ],
-
-        # Zona Kuning — keyword yang harus muncul secara natural di CV
-        "keyword_targets": ["Python", "data analysis", "SQL"],
-
-        # Zona Hijau — bebas diedit user tanpa batasan
-        "primary_angle": "Data professional dengan kemampuan teknis yang kuat",
-        "summary_hook_direction": "Buka dengan posisi sebagai data professional yang menggabungkan kemampuan teknis dengan komunikasi bisnis",
-        "tone": "technical_concise",
-
-        # Selalu false saat pertama dibuat — menjadi true setelah user approve di Interrupt 2
-        "user_approved": False,
-    }
-
-    # ── Simpan ke DB dan capture generated brief_id ───────────────────────────
-    # brief_id dibutuhkan oleh select_content node untuk membuat relasi
-    # di selected_content_packages table
-    response = supabase.table("cv_strategy_briefs").insert({
-        "application_id": application_id,
-        "content_instructions": strategy_brief["content_instructions"],
-        "narrative_instructions": strategy_brief["narrative_instructions"],
-        "keyword_targets": strategy_brief["keyword_targets"],
-        "primary_angle": strategy_brief["primary_angle"],
-        "summary_hook_direction": strategy_brief["summary_hook_direction"],
-        "tone": strategy_brief["tone"],
-        "user_approved": False,
-    }).execute()
-
-    # Ambil UUID yang di-generate DB untuk brief ini
-    brief_id = response.data[0]["id"]
-
-    logger.info(
-        f"[plan_strategy] saved strategy brief to DB: brief_id={brief_id}"
+    # Panggil Planner Agent — generate CV Strategy Brief
+    # Agent membaca gap_analysis_context + jd_jr_context dari state
+    # dan menyimpan brief ke cv_strategy_briefs table (user_approved=false)
+    # brief["brief_id"] sudah di-inject oleh agent dari DB insert response
+    brief = await run_planner(
+        application_id=application_id,
+        gap_analysis_context=state["gap_analysis_context"],
+        jd_jr_context=state["jd_jr_context"],
     )
 
-    # Return dua field sekaligus — strategy_brief untuk content, brief_id untuk relasi
+    logger.info(
+        f"[plan_strategy] brief generated: brief_id={brief.get('brief_id')}"
+    )
+
+    # Return dua field terpisah di state:
+    # - strategy_brief: full brief dict (dibaca oleh Content Writer, Summary Writer)
+    # - brief_id: UUID untuk relasi di selected_content_packages (dibaca oleh select_content)
     return {
-        "strategy_brief": strategy_brief,
-        "brief_id": brief_id,
+        "strategy_brief": brief,
+        "brief_id": brief["brief_id"],
     }
 
 
@@ -351,100 +260,28 @@ async def select_content(state: CVAgentState) -> dict:
     """
     application_id = state["application_id"]
     user_id = state["user_id"]
-    brief_id = state["brief_id"]
     logger.info(f"[select_content] called for application_id={application_id}")
 
     supabase = get_supabase()
 
-    # TODO Phase 6: Replace with real Selection Agent call
-    # from agents.cluster4.selection import run_selection
-    # return {"selected_content_package": await run_selection(
-    #     application_id, user_id, state["strategy_brief"]
-    # )}
+    # Pakai strategy_brief dari state — ini adalah versi yang sudah diapprove user
+    # (mungkin sudah diadjust user di Interrupt 2 untuk Zona Kuning/Hijau)
+    # Bukan re-fetch dari DB — state sudah punya versi terbaru
+    strategy_brief = state["strategy_brief"]
 
-    # ── Query Master Data — ambil entry nyata dari DB user ────────────────────
-    # Ini bukan placeholder — kita benar-benar query data milik user
-    # Hasilnya mungkin kosong kalau user belum mengisi profil, dan itu OK
-    # Selection Agent di Phase 6 akan melakukan ranking dan filtering yang lebih cerdas
-
-    # Ambil maksimal 3 experience entries milik user ini
-    exp_response = (
-        supabase.table("experience")
-        .select("*")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .limit(3)
-        .execute()
+    # Panggil Selection Agent — query, ranking, dan package assembly
+    # Agent menyimpan package ke selected_content_packages table
+    package = await run_selection(
+        application_id=application_id,
+        user_id=user_id,
+        strategy_brief=strategy_brief,
     )
-
-    # Ambil maksimal 3 projects entries milik user ini
-    proj_response = (
-        supabase.table("projects")
-        .select("*")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .limit(3)
-        .execute()
-    )
-
-    # ── Tambahkan bullet_quota ke setiap entry ─────────────────────────────────
-    # bullet_quota = 3 berarti Content Writer Agent akan menulis 3 bullet points
-    # per entry. Ini adalah instruksi untuk Cluster 5.
-    experience_entries = [
-        {**entry, "bullet_quota": 3}
-        for entry in exp_response.data
-    ]
-
-    projects_entries = [
-        {**entry, "bullet_quota": 3}
-        for entry in proj_response.data
-    ]
-
-    # ── Build selected_content_package — Context Package 4 ───────────────────
-    # brief: copy field-field yang dibutuhkan Content Writer dari strategy_brief
-    # selected_content: entry-entry yang dipilih per komponen
-    brief = state["strategy_brief"]
-
-    selected_content_package = {
-        "application_id": application_id,
-        "brief_id": brief_id,
-
-        # Subset dari strategy_brief yang dibutuhkan Content Writer Agent
-        "brief": {
-            "primary_angle": brief["primary_angle"],
-            "summary_hook_direction": brief["summary_hook_direction"],
-            "keyword_targets": brief["keyword_targets"],
-            "tone": brief["tone"],
-            "narrative_instructions": brief["narrative_instructions"],
-        },
-
-        # Entry yang dipilih — bisa kosong kalau user belum isi profil
-        "selected_content": {
-            "experience": experience_entries,
-            "projects": projects_entries,
-            "education": [],    # Phase 6: Selection Agent akan mengisi ini
-            "awards": [],
-            "organizations": [],
-            "skills": [],
-            "certificates": [],
-        },
-    }
-
-    # ── Simpan ke DB ──────────────────────────────────────────────────────────
-    # Disimpan sebagai JSONB — seluruh package dalam satu row
-    # Relasi ke brief via brief_id untuk audit trail
-    supabase.table("selected_content_packages").insert({
-        "application_id": application_id,
-        "brief_id": brief_id,
-        "content": selected_content_package,
-    }).execute()
 
     logger.info(
-        f"[select_content] selected {len(experience_entries)} experience "
-        f"and {len(projects_entries)} projects entries for application_id={application_id}"
+        f"[select_content] content selected for application_id={application_id}"
     )
 
-    return {"selected_content_package": selected_content_package}
+    return {"selected_content_package": package}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -870,25 +707,38 @@ async def revise_content(state: CVAgentState) -> dict:
 
     supabase = get_supabase()
 
-    # TODO Phase 6: Replace with real Revision Handler + Content Writer Agent calls
-    # from agents.cluster4.revision_handler import run_qc_revision
-    # revised_sections = await run_qc_revision(
-    #     application_id,
-    #     state["qc_report"],
-    #     state["cv_output"],
-    #     state["strategy_brief"],
-    # )
-    # Merge revised sections back into cv_output
+    # Panggil Revision Handler — Jalur A QC-driven
+    # Agent memproses semua failed sections secara paralel dengan asyncio.gather
+    # Return Context Package 6 berisi revised_bullets per section
+    revision_result = await run_qc_revision(
+        application_id=application_id,
+        qc_report=state["qc_report"],
+        cv_output=state["cv_output"],
+        strategy_brief=state["strategy_brief"],
+    )
 
-    # ── Copy cv_output lama dan tambahkan revision note ───────────────────────
-    # {**dict} membuat shallow copy — tidak mutate state langsung
-    # _revision_note adalah marker bahwa ini hasil revisi stub, bukan LLM
-    # Di Phase 6, field ini tidak ada — isinya adalah perubahan konten nyata
-    revised_cv_output = {
-        **state["cv_output"],
-        "_revision_note": f"QC-driven revision stub — iteration {current_iteration}",
-        "version": new_version,  # update version di dalam content juga
-    }
+    # ── Merge revised bullets ke cv_output ────────────────────────────────────
+    # Copy cv_output lama lalu update hanya sections yang direvisi
+    # Sections yang tidak direvisi tetap tidak berubah
+    revised_cv_output = {**state["cv_output"], "version": new_version}
+
+    for section_data in revision_result.get("sections_to_revise", []):
+        section_name = section_data["section"]
+        entry_id = section_data.get("entry_id")
+        revised_bullets = section_data.get("revised_bullets", [])
+
+        section_content = revised_cv_output.get(section_name)
+        if isinstance(section_content, list) and entry_id:
+            # Update bullets pada entry yang spesifik by entry_id
+            for entry in section_content:
+                if entry.get("entry_id") == entry_id:
+                    entry["bullets"] = revised_bullets
+                    break
+        elif isinstance(section_content, list) and section_content:
+            # Kalau tidak ada entry_id spesifik, update entry pertama
+            section_content[0]["bullets"] = revised_bullets
+        elif section_name == "summary" and revised_bullets:
+            revised_cv_output["summary"] = revised_bullets[0]
 
     # ── Simpan versi baru ke cv_outputs ───────────────────────────────────────
     # Tidak menimpa versi lama — insert row baru dengan version yang di-increment
@@ -904,21 +754,17 @@ async def revise_content(state: CVAgentState) -> dict:
 
     # ── Catat di revision_history ─────────────────────────────────────────────
     # Audit trail untuk setiap instruksi revisi yang dikirim ke Cluster 5
-    # sections berisi detail instruksi — di Phase 5 hanya placeholder
     supabase.table("revision_history").insert({
         "application_id": application_id,
         "revision_type": "qc_driven",
         "iteration": current_iteration,
-        "sections": {
-            "note": f"QC-driven revision stub for iteration {current_iteration}",
-            "sections_revised": "all",
-        },
+        "sections": revision_result,
         "status": "completed",
     }).execute()
 
     logger.info(
-        f"[revise_content] created new cv_output version={new_version} "
-        f"for application_id={application_id}"
+        f"[revise_content] QC revision complete: version={new_version}, "
+        f"sections_revised={len(revision_result.get('sections_to_revise', []))}"
     )
 
     return {
@@ -958,27 +804,37 @@ async def apply_user_revisions(state: CVAgentState) -> dict:
 
     supabase = get_supabase()
 
-    # TODO Phase 6: Replace with real user-driven Revision Handler call
-    # from agents.cluster4.revision_handler import run_user_revision
-    # revised_sections = await run_user_revision(
-    #     application_id,
-    #     state["user_revision_instructions"],
-    #     state["cv_output"],
-    #     state["strategy_brief"],
-    # )
-    # Merge revised sections back into cv_output
+    # Panggil Revision Handler — Jalur B user-driven
+    # Agent memproses sections yang diminta user secara paralel
+    # Return Context Package 6 berisi revised_bullets per section
+    revision_result = await run_user_revision(
+        application_id=application_id,
+        user_instructions=state.get("user_revision_instructions", {}),
+        cv_output=state["cv_output"],
+        strategy_brief=state["strategy_brief"],
+    )
 
-    # ── Copy cv_output lama dan tambahkan revision note ───────────────────────
-    revised_cv_output = {
-        **state["cv_output"],
-        "_revision_note": f"User-driven revision stub — sections: {revision_keys}",
-        "version": new_version,
-    }
+    # ── Merge revised bullets ke cv_output ────────────────────────────────────
+    # Copy cv_output lama lalu update hanya sections yang direvisi user
+    revised_cv_output = {**state["cv_output"], "version": new_version}
 
-    # ── Tentukan section_revised ───────────────────────────────────────────────
-    # Real implementation merevisi satu section per request
-    # Ambil key pertama dari revision instructions sebagai section yang direvisi
-    # Kalau tidak ada instruksi (edge case), set ke "unknown"
+    for section_data in revision_result.get("sections_to_revise", []):
+        section_name = section_data["section"]
+        entry_id = section_data.get("entry_id")
+        revised_bullets = section_data.get("revised_bullets", [])
+
+        section_content = revised_cv_output.get(section_name)
+        if isinstance(section_content, list) and entry_id:
+            for entry in section_content:
+                if entry.get("entry_id") == entry_id:
+                    entry["bullets"] = revised_bullets
+                    break
+        elif isinstance(section_content, list) and section_content:
+            section_content[0]["bullets"] = revised_bullets
+        elif section_name == "summary" and revised_bullets:
+            revised_cv_output["summary"] = revised_bullets[0]
+
+    # ── Tentukan section_revised — ambil key pertama sebagai label di DB ───────
     section_revised = revision_keys[0] if revision_keys else "unknown"
 
     # ── Simpan versi baru ke cv_outputs ───────────────────────────────────────
@@ -996,17 +852,13 @@ async def apply_user_revisions(state: CVAgentState) -> dict:
         "application_id": application_id,
         "revision_type": "user_driven",
         "iteration": 1,     # user-driven tidak punya iteration counter
-        "sections": {
-            "note": f"User-driven revision stub",
-            "sections_requested": revision_keys,
-            "instructions": state.get("user_revision_instructions", {}),
-        },
+        "sections": revision_result,
         "status": "completed",
     }).execute()
 
     logger.info(
-        f"[apply_user_revisions] created new cv_output version={new_version} "
-        f"for application_id={application_id}, section_revised={section_revised}"
+        f"[apply_user_revisions] user revision complete: version={new_version}, "
+        f"sections_revised={len(revision_result.get('sections_to_revise', []))}"
     )
 
     return {
