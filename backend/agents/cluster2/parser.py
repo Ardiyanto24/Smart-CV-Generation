@@ -6,12 +6,15 @@ Parser Agent — Cluster 2
 Mengubah raw JD/JR text menjadi atomic requirement items.
 Output disimpan ke dua tabel: job_descriptions dan job_requirements.
 Items dengan source "JD+JR" masuk ke kedua tabel.
+
+Prompts dikelola di: agents/prompts/parser_prompt.py
 """
 
 import json
 import logging
 
 from agents.llm_client import call_llm
+from agents.prompts.parser_prompt import PARSER_SYSTEM
 from db.supabase import get_supabase
 
 logger = logging.getLogger("agents.cluster2.parser")
@@ -44,43 +47,19 @@ async def run_parser(
     """
     logger.info(f"[run_parser] parsing JD/JR for application_id={application_id}")
 
-    # ── System prompt ─────────────────────────────────────────────────────────
-    system_prompt = """You are an expert job description parser. Your job is to decompose raw Job Description (JD) and Job Requirements (JR) texts into atomic requirement items.
-
-Rules:
-1. ATOMIZE: Split every compound sentence into separate items. "Python and SQL" → two items. "Analyze data and build dashboards" → two items.
-2. PRIORITY DETECTION: Mark as "nice_to_have" if the item contains signals like: "nilai plus", "diutamakan", "menjadi keunggulan", "preferred", "a plus", "nice to have", "would be great", "bonus", "advantage". Everything else is "must".
-3. DEDUPLICATE: If the same requirement appears in both JD and JR, output it ONCE with source "JD+JR".
-4. PRESERVE PHRASING: Keep the original phrasing as close as possible — do not paraphrase or generalize.
-5. ID FORMAT: Use "d001", "d002"... for JD items. Use "r001", "r002"... for JR items. For JD+JR items, use "r" prefix.
-6. Respond ONLY with a valid JSON array — no markdown fences, no preamble.
-
-Output structure (JSON array):
-[
-  {
-    "id": "d001",
-    "text": "atomic requirement or responsibility text",
-    "source": "JD",
-    "priority": "must"
-  },
-  {
-    "id": "r001",
-    "text": "atomic requirement text",
-    "source": "JR",
-    "priority": "must"
-  },
-  {
-    "id": "r002",
-    "text": "item appearing in both JD and JR",
-    "source": "JD+JR",
-    "priority": "must"
-  }
-]"""
-
-    # ── User prompt — kirim raw JD dan JR ─────────────────────────────────────
-    # Handle None/empty gracefully — agent tetap bisa proses satu saja
-    jd_section = f"JOB DESCRIPTION (JD):\n{jd_raw}" if jd_raw else "JOB DESCRIPTION (JD): (not provided)"
-    jr_section = f"JOB REQUIREMENTS (JR):\n{jr_raw}" if jr_raw else "JOB REQUIREMENTS (JR): (not provided)"
+    # User prompt — kirim raw JD dan JR ke LLM
+    # Handle None/empty gracefully — agent tetap bisa proses satu source saja
+    # System prompt dikelola di agents/prompts/parser_prompt.py
+    jd_section = (
+        f"JOB DESCRIPTION (JD):\n{jd_raw}"
+        if jd_raw
+        else "JOB DESCRIPTION (JD): (not provided)"
+    )
+    jr_section = (
+        f"JOB REQUIREMENTS (JR):\n{jr_raw}"
+        if jr_raw
+        else "JOB REQUIREMENTS (JR): (not provided)"
+    )
 
     user_prompt = f"""Parse and atomize the following job posting:
 
@@ -91,13 +70,15 @@ Output structure (JSON array):
 Return a JSON array of atomic items following the specified structure."""
 
     # ── LLM call ──────────────────────────────────────────────────────────────
+    # max_tokens=2000 karena JD/JR bisa panjang dan menghasilkan banyak atomic items
     raw_response = await call_llm(
-        system_prompt=system_prompt,
+        system_prompt=PARSER_SYSTEM,
         user_prompt=user_prompt,
-        max_tokens=2000,    # JD/JR bisa panjang — butuh token lebih banyak
+        max_tokens=2000,
     )
 
     # ── Parse JSON response ───────────────────────────────────────────────────
+    # JSONDecodeError di-raise sebagai ValueError agar with_retry bisa retry
     try:
         parsed_items = json.loads(raw_response)
     except json.JSONDecodeError as e:
@@ -125,14 +106,20 @@ Return a JSON array of atomic items following the specified structure."""
     # JD items  : source = "JD" atau "JD+JR"
     # JR items  : source = "JR" atau "JD+JR"
     # JD+JR items masuk ke KEDUA tabel — downstream consumer membaca tabel masing-masing
-
-    jd_items = [item for item in parsed_items if item.get("source") in ("JD", "JD+JR")]
-    jr_items = [item for item in parsed_items if item.get("source") in ("JR", "JD+JR")]
+    jd_items = [
+        item for item in parsed_items
+        if item.get("source") in ("JD", "JD+JR")
+    ]
+    jr_items = [
+        item for item in parsed_items
+        if item.get("source") in ("JR", "JD+JR")
+    ]
 
     supabase = get_supabase()
 
     # ── Insert ke job_descriptions table ──────────────────────────────────────
-    # Satu row per JD item — responsibility_id menggunakan id dari parser output
+    # Batch insert — satu API call untuk semua JD items
+    # responsibility_id menggunakan id dari parser output (d001, d002, ...)
     if jd_items:
         jd_rows = [
             {
@@ -149,7 +136,8 @@ Return a JSON array of atomic items following the specified structure."""
         )
 
     # ── Insert ke job_requirements table ──────────────────────────────────────
-    # Satu row per JR item — requirement_id menggunakan id dari parser output
+    # Batch insert — satu API call untuk semua JR items
+    # requirement_id menggunakan id dari parser output (r001, r002, ...)
     if jr_items:
         jr_rows = [
             {
@@ -168,9 +156,9 @@ Return a JSON array of atomic items following the specified structure."""
         )
 
     # ── Build jd_jr_context — Context Package 2 ───────────────────────────────
-    # Format yang dikonsumsi oleh node berikutnya (analyze_gap)
-    # job_descriptions: hanya responsibility_id dan text — no priority/source
-    # job_requirements: responsibility_id, text, source, priority — full info
+    # Format yang dikonsumsi oleh analyze_gap node (Gap Analyzer Agent)
+    # job_descriptions: hanya responsibility_id dan text — Gap Analyzer tidak butuh priority JD
+    # job_requirements: full info termasuk source dan priority — dibutuhkan untuk scoring
     jd_jr_context = {
         "application_id": application_id,
         "job_descriptions": [
