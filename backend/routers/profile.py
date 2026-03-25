@@ -10,6 +10,12 @@ from models.profile import (
     SkillResponse,
 )
 
+from agents.cluster1.profile_ingestion import (
+    check_stale_skills,
+    run_stage1,
+    run_stage2,
+)
+
 from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status, Response
@@ -174,40 +180,68 @@ async def list_entries(
 @router.post("/{component}", status_code=status.HTTP_201_CREATED)
 async def create_entry(
     component: str,
-    data: Dict[str, Any] = Body(...),   # terima raw dict karena shape beda per komponen
+    data: Dict[str, Any] = Body(...),
     current_user=Depends(get_current_user),
 ):
     """
     Create a new entry for a given Master Data component.
-    The user_id is always injected from the authenticated session —
-    never trusted from the request body.
+    After insert, Profile Ingestion Agent runs Stage 1 (decompose) and
+    Stage 2 (infer standalone skills). Skill suggestions are returned
+    in the response for user to approve or reject.
     """
-    # Validasi component — raise 400 jika tidak valid
     validate_component(component)
 
-    # Buang user_id dari request body kalau user iseng mengirimkannya
-    # Ini mencegah user mengklaim ownership atas data milik user lain
+    # Buang user_id dari request body kalau dikirim — security measure
     data.pop("user_id", None)
-
-    # Inject user_id yang benar dari authenticated session
     data["user_id"] = str(current_user.id)
 
     supabase = get_supabase()
 
-    # Insert ke tabel yang sesuai dengan component
+    # ── Insert raw entry ke DB ────────────────────────────────────────────────
     response = (
         supabase.table(component)
         .insert(data)
         .execute()
     )
 
-    # TODO Phase 6: Trigger Profile Ingestion Agent after insert
-    # Agent akan: (1) decompose what_i_did menjadi array atomic items
-    #             (2) infer skills_used dari konteks entry
-    #             (3) suggest standalone skills ke user untuk di-approve
+    inserted_row = response.data[0]
+    entry_id = inserted_row["id"]
 
-    # response.data adalah list — ambil element pertama (row yang baru dibuat)
-    return response.data[0]
+    # ── Stage 1: Dekomposisi + inferensi contextual skills ────────────────────
+    # Memecah what_i_did, challenge, impact menjadi atomic arrays
+    # Mengupdate DB row secara langsung — tidak perlu konfirmasi user
+    decomposed_entry = await run_stage1(
+        component=component,
+        entry=inserted_row,
+        entry_id=entry_id,
+    )
+
+    # ── Stage 2: Inferensi standalone skills ──────────────────────────────────
+    # Skills yang tidak eksplisit tapi bisa disimpulkan dari konteks
+    # TIDAK langsung ke DB — dikembalikan sebagai suggestion untuk user
+    skill_suggestions = await run_stage2(
+        component=component,
+        entry_id=entry_id,
+        entry=decomposed_entry,
+        user_id=str(current_user.id),
+    )
+
+    # ── Build response ────────────────────────────────────────────────────────
+    # Fetch updated row dari DB — setelah Stage 1 mengupdate arrays
+    updated_response = (
+        supabase.table(component)
+        .select("*")
+        .eq("id", entry_id)
+        .execute()
+    )
+    updated_row = updated_response.data[0]
+
+    # skill_suggestions hanya disertakan kalau ada isinya
+    # Frontend cek keberadaan key ini untuk menampilkan suggestion panel
+    if skill_suggestions:
+        updated_row["skill_suggestions"] = skill_suggestions
+
+    return updated_row
 
 
 @router.put("/{component}/{id}")
@@ -219,16 +253,14 @@ async def update_entry(
 ):
     """
     Update an existing entry for a given Master Data component.
-    Only fields present in the request body will be updated (partial update).
-    Ownership is verified before update — users can only edit their own entries.
+    After update, Profile Ingestion Agent re-runs Stage 1 (re-decompose),
+    checks for stale skills, and runs Stage 2 (new suggestions).
     """
-    # Validasi component — raise 400 jika tidak valid
     validate_component(component)
 
     supabase = get_supabase()
 
-    # Ownership check — cari entry dengan id DAN user_id yang cocok
-    # Kalau tidak ketemu berarti: entry tidak ada, atau bukan milik user ini
+    # ── Ownership check ───────────────────────────────────────────────────────
     existing = (
         supabase.table(component)
         .select("id")
@@ -243,15 +275,13 @@ async def update_entry(
             detail="Entry not found",
         )
 
-    # Buang field-field yang tidak boleh diubah via endpoint ini
-    # Meski user sengaja mengirimkan field ini, kita abaikan
+    # Buang protected fields
     for protected_field in ["id", "user_id", "created_at", "is_inferred"]:
         data.pop(protected_field, None)
 
-    # Set updated_at ke waktu sekarang (UTC)
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-    # Lakukan update — hanya row dengan id dan user_id yang cocok
+    # ── Update DB ─────────────────────────────────────────────────────────────
     response = (
         supabase.table(component)
         .update(data)
@@ -260,12 +290,54 @@ async def update_entry(
         .execute()
     )
 
-    # TODO Phase 6: Trigger Profile Ingestion Agent re-run after update
-    # Agent akan: (1) re-decompose what_i_did yang baru
-    #             (2) cek stale skills — skill lama yang tidak lagi relevan
-    #             (3) suggest skills baru kalau ada
+    updated_row = response.data[0]
 
-    return response.data[0]
+    # ── Stage 1: Re-dekomposisi entry yang baru di-update ─────────────────────
+    # Entry sudah berubah — perlu dekomposisi ulang untuk menghasilkan
+    # arrays yang akurat berdasarkan konten terbaru
+    decomposed_entry = await run_stage1(
+        component=component,
+        entry=updated_row,
+        entry_id=id,
+    )
+
+    # ── Stale skill check ─────────────────────────────────────────────────────
+    # Cek apakah ada skills lama yang diinfer dari entry ini
+    # yang tidak lagi relevan setelah konten berubah
+    # new_skills_used adalah hasil Stage 1 yang baru
+    stale_skill_names = await check_stale_skills(
+        component=component,
+        entry_id=id,
+        user_id=str(current_user.id),
+        new_skills_used=decomposed_entry.get("skills_used", []),
+    )
+
+    # ── Stage 2: Inferensi skills baru dari konten yang sudah diupdate ────────
+    new_skill_suggestions = await run_stage2(
+        component=component,
+        entry_id=id,
+        entry=decomposed_entry,
+        user_id=str(current_user.id),
+    )
+
+    # ── Fetch updated row dari DB ─────────────────────────────────────────────
+    final_response = (
+        supabase.table(component)
+        .select("*")
+        .eq("id", id)
+        .execute()
+    )
+    final_row = final_response.data[0]
+
+    # ── Build response ────────────────────────────────────────────────────────
+    # Kedua field opsional — hanya disertakan kalau ada isinya
+    if new_skill_suggestions:
+        final_row["skill_suggestions"] = new_skill_suggestions
+
+    if stale_skill_names:
+        final_row["stale_skills"] = stale_skill_names
+
+    return final_row
 
 
 @router.delete("/{component}/{id}", status_code=status.HTTP_204_NO_CONTENT)
