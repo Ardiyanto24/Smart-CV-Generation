@@ -10,12 +10,15 @@ Dua tahap yang berjalan sekuensial:
 
 Plus satu helper untuk update operations:
   check_stale_skills: deteksi skills lama yang tidak lagi relevan
+
+Prompts dikelola di: agents/prompts/profile_ingestion_prompt.py
 """
 
 import json
 import logging
 
 from agents.llm_client import call_llm
+from agents.prompts.profile_ingestion_prompt import STAGE1_SYSTEM, STAGE2_SYSTEM
 from db.supabase import get_supabase
 
 logger = logging.getLogger("agents.cluster1.profile_ingestion")
@@ -43,28 +46,8 @@ async def run_stage1(component: str, entry: dict, entry_id: str) -> dict:
         f"[run_stage1] processing component={component}, entry_id={entry_id}"
     )
 
-    # ── System prompt ─────────────────────────────────────────────────────────
-    # Instruksi ketat: respond ONLY valid JSON, no markdown, no preamble
-    system_prompt = """You are an expert CV data processor. Your job is to decompose raw profile entry text into structured, atomic items.
-
-Rules:
-1. Break compound sentences into separate atomic items — one item = one specific thing
-2. Each item must be self-explanatory without context from other items
-3. For skills_used: only include skills that are EXPLICITLY evidenced by the described activities — high confidence only, no speculation
-4. Keep the original language (Indonesian or English) — do not translate
-5. Respond ONLY with valid JSON — no markdown fences, no explanation, no preamble
-
-Output structure:
-{
-  "what_i_did": ["atomic action item 1", "atomic action item 2", ...],
-  "challenge": ["atomic challenge item 1", ...],
-  "impact": ["atomic impact item 1", ...],
-  "skills_used": ["Skill1", "Skill2", ...]
-}
-
-If a field is empty or not provided, return an empty array for that field."""
-
-    # ── User prompt — kirim raw entry data ───────────────────────────────────
+    # User prompt — kirim raw entry data ke LLM
+    # System prompt dikelola di agents/prompts/profile_ingestion_prompt.py
     user_prompt = f"""Decompose this {component} entry:
 
 Component: {component}
@@ -75,13 +58,13 @@ Return the decomposed result as JSON following the specified structure."""
 
     # ── LLM call ──────────────────────────────────────────────────────────────
     raw_response = await call_llm(
-        system_prompt=system_prompt,
+        system_prompt=STAGE1_SYSTEM,
         user_prompt=user_prompt,
         max_tokens=1000,
     )
 
     # ── Parse JSON response ───────────────────────────────────────────────────
-    # JSONDecodeError harus di-raise sebagai ValueError agar with_retry bisa retry
+    # JSONDecodeError di-raise sebagai ValueError agar with_retry bisa retry
     try:
         result = json.loads(raw_response)
     except json.JSONDecodeError as e:
@@ -94,7 +77,7 @@ Return the decomposed result as JSON following the specified structure."""
         )
 
     # ── Validasi struktur response ────────────────────────────────────────────
-    # Pastikan semua keys ada — LLM kadang lupa beberapa field
+    # Pastikan semua keys ada — LLM kadang lupa field yang nilainya empty
     for key in ["what_i_did", "challenge", "impact", "skills_used"]:
         if key not in result:
             result[key] = []
@@ -155,39 +138,19 @@ async def run_stage2(
         f"component={component}, entry_id={entry_id}"
     )
 
-    # ── System prompt ─────────────────────────────────────────────────────────
-    system_prompt = """You are an expert CV skills analyzer. Your job is to infer skills that are NOT explicitly listed but can be confidently deduced from the context of a profile entry.
-
-Rules:
-1. Only infer skills with HIGH confidence — if it can be clearly deduced from the described activities
-2. Do NOT include skills that are already in the skills_used list of the entry
-3. The "source" field must be a brief, plain-language explanation of WHY this skill was inferred
-4. Category must be exactly one of: "technical", "soft", "tool"
-5. Respond ONLY with valid JSON — no markdown fences, no preamble
-
-Example: If someone used "Random Forest in Python", you can infer "Scikit-learn" because Random Forest is primarily used via scikit-learn in Python.
-
-Output structure:
-[
-  {
-    "name": "SkillName",
-    "category": "technical|soft|tool",
-    "source": "Brief explanation of why this skill was inferred from the entry context"
-  }
-]
-
-Return empty array [] if no skills can be confidently inferred."""
-
+    # User prompt — kirim decomposed entry dari Stage 1
+    # System prompt dikelola di agents/prompts/profile_ingestion_prompt.py
     user_prompt = f"""Analyze this {component} entry and infer standalone skills:
 
-Entry data (already decomposed):
+Entry data (already decomposed by Stage 1):
 {json.dumps(entry, ensure_ascii=False, indent=2)}
 
-Return a JSON array of inferred skill objects. Only include skills NOT already in the skills_used list above."""
+Return a JSON array of inferred skill objects.
+Only include skills NOT already in the skills_used list above."""
 
     # ── LLM call ──────────────────────────────────────────────────────────────
     raw_response = await call_llm(
-        system_prompt=system_prompt,
+        system_prompt=STAGE2_SYSTEM,
         user_prompt=user_prompt,
         max_tokens=500,
     )
@@ -227,14 +190,15 @@ Return a JSON array of inferred skill objects. Only include skills NOT already i
         for row in existing_response.data
     }
 
-    # Filter out skills yang sudah ada
+    # Filter out skills yang sudah ada di DB
     filtered_skills = [
         skill for skill in inferred_skills
         if skill.get("name", "").lower() not in existing_names
     ]
 
-    # Tambahkan entry_id ke source untuk referensi saat check_stale_skills
+    # Tambahkan entry_id ke source untuk referensi saat check_stale_skills nanti
     # Format: "original source text [entry_id: uuid]"
+    # Dipakai oleh check_stale_skills untuk query dengan .like("source", "%uuid%")
     for skill in filtered_skills:
         skill["source"] = f"{skill.get('source', '')} [entry_id: {entry_id}]"
 
@@ -284,13 +248,14 @@ async def check_stale_skills(
     # Query skills yang:
     # 1. Milik user ini
     # 2. is_inferred = true (hanya skills yang diinfer, bukan yang diinput manual)
-    # 3. source mengandung entry_id ini (menunjukkan skill ini diinfer dari entry ini)
+    # 3. source mengandung entry_id ini (skill ini diinfer dari entry ini)
+    # Format source: "...explanation... [entry_id: uuid]" — diset di run_stage2
     response = (
         supabase.table("skills")
         .select("name, source")
         .eq("user_id", user_id)
         .eq("is_inferred", True)
-        .like("source", f"%{entry_id}%")  # source field mengandung entry_id
+        .like("source", f"%{entry_id}%")
         .execute()
     )
 
@@ -300,10 +265,10 @@ async def check_stale_skills(
         )
         return []
 
-    # Normalize new_skills_used ke lowercase untuk comparison
+    # Normalize new_skills_used ke lowercase untuk case-insensitive comparison
     new_skills_lower = {skill.lower() for skill in new_skills_used}
 
-    # Skill dianggap stale kalau tidak ada di new_skills_used
+    # Skill dianggap stale kalau tidak ada di new_skills_used yang baru
     stale_skills = [
         row["name"]
         for row in response.data
