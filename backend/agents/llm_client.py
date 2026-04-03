@@ -3,28 +3,23 @@
 """
 Shared Anthropic LLM client untuk semua agents di CV Agent system.
 
-Menggunakan Google Cloud Vertex AI sebagai provider.
-Autentikasi via Application Default Credentials (ADC).
+Menyediakan:
+- `call_llm()` — helper async function untuk semua LLM calls
+
+Semua agents mengimport dari module ini — tidak ada yang membuat
+client instance sendiri.
 """
 
-import functools
 import logging
 
-from anthropic import AnthropicVertex
+import anthropic
+
 from config import get_settings
 
 logger = logging.getLogger("agents.llm_client")
 
-GCP_PROJECT_ID = "project-6f8e6637-365a-44b6-b0a"
-GCP_REGION = "us-east5"
-
-
-@functools.lru_cache
-def _get_client() -> AnthropicVertex:
-    return AnthropicVertex(
-        project_id=GCP_PROJECT_ID,
-        region=GCP_REGION,
-    )
+settings = get_settings()
+llm = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 
 async def call_llm(
@@ -32,9 +27,6 @@ async def call_llm(
     user_prompt: str,
     max_tokens: int = 1000,
 ) -> str:
-    settings = get_settings()
-    client = _get_client()
-
     logger.debug(
         f"[call_llm] calling model={settings.llm_model}, "
         f"max_tokens={max_tokens}, "
@@ -42,7 +34,7 @@ async def call_llm(
         f"user_prompt_len={len(user_prompt)}"
     )
 
-    response = client.messages.create(
+    response = llm.messages.create(
         model=settings.llm_model,
         max_tokens=max_tokens,
         system=system_prompt,
