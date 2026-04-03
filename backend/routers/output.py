@@ -1,9 +1,13 @@
 # cv-agent/backend/routers/output.py
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.auth import get_current_user
 from db.supabase import get_supabase
+
+logger = logging.getLogger("routers.output")
 
 router = APIRouter(
     prefix="/applications",
@@ -11,10 +15,7 @@ router = APIRouter(
 )
 
 
-# ─── Helper: Verify Application Ownership ─────────────────────────────────────
-# Sama seperti di workflow.py dan applications.py — sengaja tidak di-share
-# antar router karena routers tidak boleh saling import
-
+# ── Helper: Verify Application Ownership ──────────────────────────────────────
 async def verify_application_ownership(
     application_id: str,
     user_id: str,
@@ -42,44 +43,99 @@ async def verify_application_ownership(
     return response.data[0]
 
 
-# ─── POST /applications/{id}/render ───────────────────────────────────────────
-# Trigger Document Renderer untuk mengkonversi Final Structured Output JSON
-# menjadi file PDF dan DOCX yang bisa didownload user
-# Phase 4: stub — belum ada implementasi
-# Phase 7: akan memanggil WeasyPrint (PDF) dan python-docx (DOCX)
+# ── POST /applications/{id}/render ────────────────────────────────────────────
 
-@router.post("/{id}/render", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@router.post("/{id}/render", status_code=status.HTTP_200_OK)
 async def render_document(
     id: str,
     current_user=Depends(get_current_user),
 ):
     """
-    Trigger the Document Renderer to convert the Final Structured Output
-    JSON into PDF and DOCX files, then upload to Supabase Storage.
-    PHASE 4 STUB: Document renderer will be built in Phase 7.
+    Manually trigger Document Renderer for the latest approved CV output.
+
+    Queries cv_outputs for the highest version with status 'user_approved'
+    or 'final', renders to PDF and DOCX, uploads to Supabase Storage,
+    and updates status to 'final'.
     """
+    from renderer.document_renderer import render_and_upload
+
     await verify_application_ownership(
         application_id=id,
         user_id=str(current_user.id),
     )
 
-    # TODO Phase 7: Trigger Document Renderer (WeasyPrint + python-docx)
-    # 1. Fetch latest cv_outputs row for this application
-    # 2. Call render_and_upload(cv_output, application_id, cv_version)
-    # 3. Update cv_outputs status to "final"
-    # 4. Return storage paths
+    supabase = get_supabase()
+
+    # ── Query cv_outputs — versi tertinggi yang sudah approved ────────────────
+    # Filter status: "user_approved" (baru approve) atau "final" (sudah pernah render)
+    # Order by version descending + limit 1 → ambil versi terbaru
+    response = (
+        supabase.table("cv_outputs")
+        .select("version, content, status")
+        .eq("application_id", id)
+        .in_("status", ["user_approved", "final"])
+        .order("version", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No approved CV output found for this application. "
+                "Complete the review workflow before rendering."
+            ),
+        )
+
+    cv_row = response.data[0]
+    cv_version = cv_row["version"]
+    cv_content = cv_row["content"]
+
+    logger.info(
+        f"[render_document] triggering render for application_id={id}, "
+        f"cv_version={cv_version}"
+    )
+
+    # ── Render PDF + DOCX dan upload ke Supabase Storage ─────────────────────
+    # render_and_upload raise RuntimeError jika salah satu langkah gagal
+    try:
+        result = await render_and_upload(
+            cv_output=cv_content,
+            application_id=id,
+            cv_version=cv_version,
+        )
+    except RuntimeError as e:
+        logger.error(
+            f"[render_document] rendering failed for application_id={id}: {e}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+    pdf_path = result["pdf_path"]
+    docx_path = result["docx_path"]
+
+    # ── Update status cv_outputs ke "final" ───────────────────────────────────
+    # Update hanya row dengan version yang sesuai — bukan semua versi
+    supabase.table("cv_outputs").update({
+        "status": "final",
+    }).eq("application_id", id).eq("version", cv_version).execute()
+
+    logger.info(
+        f"[render_document] render complete — "
+        f"pdf={pdf_path}, docx={docx_path}"
+    )
 
     return {
-        "status": "not_implemented",
-        "message": "Document renderer will be wired in Phase 7",
+        "pdf_path": pdf_path,
+        "docx_path": docx_path,
+        "message": "CV rendered successfully",
     }
 
 
-# ─── GET /applications/{id}/download ──────────────────────────────────────────
-# Generate signed URL untuk download file PDF atau DOCX dari Supabase Storage
-# Signed URL bersifat time-limited — expired setelah SIGNED_URL_EXPIRY_SECONDS
-# Phase 4: stub — belum ada implementasi
-# Phase 7: akan generate signed URL dari Supabase Storage
+# ── GET /applications/{id}/download ───────────────────────────────────────────
 
 @router.get("/{id}/download", status_code=status.HTTP_501_NOT_IMPLEMENTED)
 async def download_cv(
@@ -89,20 +145,14 @@ async def download_cv(
     """
     Generate a time-limited signed URL for downloading the rendered CV.
     Accepts optional query parameter 'format' (pdf or docx, default: pdf).
-    PHASE 4 STUB: Download will be available after Phase 7.
+    PHASE 7 STUB: Will be implemented in Task 7.2.1.
     """
     await verify_application_ownership(
         application_id=id,
         user_id=str(current_user.id),
     )
 
-    # TODO Phase 7: Generate Supabase Storage signed URL (SIGNED_URL_EXPIRY_SECONDS)
-    # 1. Determine format from query param (pdf or docx)
-    # 2. Construct storage path: {application_id}/cv_v{version}.{format}
-    # 3. Call generate_signed_url(storage_path)
-    # 4. Return {"url": signed_url, "format": format, "expires_in_seconds": N}
-
     return {
         "status": "not_implemented",
-        "message": "Download will be available after Phase 7",
+        "message": "Download endpoint will be implemented in Task 7.2.1",
     }
