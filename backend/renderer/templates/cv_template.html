@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ cv.header.name }} — CV</title>
+  <style>
+
+    /* ── Reset & Base ─────────────────────────────────────────────────────── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
+                   Arial, sans-serif;
+      font-size: 10pt;
+      line-height: 1.5;
+      color: #111;
+      background: #fff;
+    }
+
+    /* ── Page Layout (screen preview) ────────────────────────────────────── */
+    .page {
+      max-width: 210mm;
+      margin: 0 auto;
+      padding: 20mm 15mm;
+    }
+
+    /* ── Print & PDF Rules ────────────────────────────────────────────────── */
+    @page {
+      size: A4;
+      margin: 20mm 15mm;
+    }
+
+    @media print {
+      body {
+        font-size: 10pt;
+      }
+      .page {
+        max-width: none;
+        margin: 0;
+        padding: 0;
+      }
+    }
+
+    /* ── Header ───────────────────────────────────────────────────────────── */
+    .header {
+      text-align: center;
+      margin-bottom: 14pt;
+    }
+
+    .header-name {
+      font-size: 22pt;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      margin-bottom: 4pt;
+    }
+
+    .header-contact {
+      font-size: 9pt;
+      color: #333;
+    }
+
+    .header-contact span + span::before {
+      content: " · ";
+      color: #999;
+    }
+
+    /* ── Section Heading ──────────────────────────────────────────────────── */
+    .section {
+      margin-bottom: 14pt;
+    }
+
+    .section-heading {
+      font-size: 9.5pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      border-bottom: 1px solid #111;
+      padding-bottom: 2pt;
+      margin-bottom: 7pt;
+    }
+
+    /* ── Entry Block ──────────────────────────────────────────────────────── */
+    /* page-break-inside: avoid mencegah satu entry terpotong antar halaman */
+    .entry {
+      margin-bottom: 8pt;
+      page-break-inside: avoid;
+    }
+
+    .entry:last-child {
+      margin-bottom: 0;
+    }
+
+    /* ── Entry Header Row (title + date on same line) ─────────────────────── */
+    .entry-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8pt;
+    }
+
+    .entry-title {
+      font-weight: 700;
+      font-size: 10pt;
+    }
+
+    .entry-date {
+      font-size: 9pt;
+      color: #444;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* ── Entry Subtitle (role / degree) ──────────────────────────────────── */
+    .entry-subtitle {
+      font-style: italic;
+      font-size: 9.5pt;
+      color: #222;
+      margin-bottom: 3pt;
+    }
+
+    /* ── Bullet Points ────────────────────────────────────────────────────── */
+    .bullets {
+      margin-left: 12pt;
+      margin-top: 3pt;
+    }
+
+    .bullets li {
+      margin-bottom: 2pt;
+      font-size: 9.5pt;
+      list-style-type: disc;
+    }
+
+    /* ── Summary ──────────────────────────────────────────────────────────── */
+    .summary-text {
+      font-size: 9.5pt;
+      line-height: 1.6;
+      text-align: justify;
+    }
+
+    /* ── Skills ───────────────────────────────────────────────────────────── */
+    .skills-row {
+      display: flex;
+      gap: 8pt;
+      margin-bottom: 4pt;
+      page-break-inside: avoid;
+      font-size: 9.5pt;
+    }
+
+    .skills-label {
+      font-weight: 700;
+      white-space: nowrap;
+      min-width: 120pt;
+      flex-shrink: 0;
+    }
+
+    .skills-items {
+      color: #222;
+    }
+
+    /* ── Certificates ─────────────────────────────────────────────────────── */
+    .cert-entry {
+      font-size: 9.5pt;
+      margin-bottom: 3pt;
+      page-break-inside: avoid;
+    }
+
+    .cert-name {
+      font-weight: 600;
+    }
+
+    .cert-issuer {
+      color: #444;
+    }
+
+  </style>
+</head>
+<body>
+<div class="page">
+
+  {# ── 1. HEADER ─────────────────────────────────────────────────────────── #}
+  {% if cv.header %}
+  <div class="header">
+    <div class="header-name">{{ cv.header.name }}</div>
+    <div class="header-contact">
+      {% if cv.header.email %}
+        <span>{{ cv.header.email }}</span>
+      {% endif %}
+      {% if cv.header.phone %}
+        <span>{{ cv.header.phone }}</span>
+      {% endif %}
+      {% if cv.header.linkedin %}
+        <span>{{ cv.header.linkedin }}</span>
+      {% endif %}
+      {% if cv.header.github %}
+        <span>{{ cv.header.github }}</span>
+      {% endif %}
+      {% if cv.header.portfolio %}
+        <span>{{ cv.header.portfolio }}</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── 2. SUMMARY ────────────────────────────────────────────────────────── #}
+  {% if cv.summary %}
+  <div class="section">
+    <div class="section-heading">Summary</div>
+    <p class="summary-text">{{ cv.summary }}</p>
+  </div>
+  {% endif %}
+
+  {# ── 3. EXPERIENCE ─────────────────────────────────────────────────────── #}
+  {% if cv.experience %}
+  <div class="section">
+    <div class="section-heading">Experience</div>
+    {% for entry in cv.experience %}
+    <div class="entry">
+      <div class="entry-header">
+        <span class="entry-title">{{ entry.company }}</span>
+        <span class="entry-date">{{ entry.year }}</span>
+      </div>
+      <div class="entry-subtitle">{{ entry.role }}</div>
+      {% if entry.bullets %}
+      <ul class="bullets">
+        {% for bullet in entry.bullets %}
+        <li>{{ bullet }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── 4. EDUCATION ──────────────────────────────────────────────────────── #}
+  {% if cv.education %}
+  <div class="section">
+    <div class="section-heading">Education</div>
+    {% for entry in cv.education %}
+    <div class="entry">
+      <div class="entry-header">
+        <span class="entry-title">{{ entry.institution }}</span>
+        <span class="entry-date">{{ entry.year }}</span>
+      </div>
+      <div class="entry-subtitle">
+        {{ entry.degree }}{% if entry.field %} — {{ entry.field }}{% endif %}
+        {% if entry.gpa %} · GPA {{ entry.gpa }}{% endif %}
+      </div>
+      {% if entry.bullets %}
+      <ul class="bullets">
+        {% for bullet in entry.bullets %}
+        <li>{{ bullet }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── 5. AWARDS ─────────────────────────────────────────────────────────── #}
+  {% if cv.awards %}
+  <div class="section">
+    <div class="section-heading">Awards</div>
+    {% for entry in cv.awards %}
+    <div class="entry">
+      <div class="entry-header">
+        <span class="entry-title">{{ entry.title }}</span>
+        <span class="entry-date">{{ entry.year }}</span>
+      </div>
+      {% if entry.issuer %}
+      <div class="entry-subtitle">{{ entry.issuer }}</div>
+      {% endif %}
+      {% if entry.bullets %}
+      <ul class="bullets">
+        {% for bullet in entry.bullets %}
+        <li>{{ bullet }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── 6. SKILLS ─────────────────────────────────────────────────────────── #}
+  {% if cv.skills and cv.skills.skills_grouped %}
+  <div class="section">
+    <div class="section-heading">Skills</div>
+    {% for group in cv.skills.skills_grouped %}
+    <div class="skills-row">
+      <span class="skills-label">{{ group.group_label }}</span>
+      <span class="skills-items">{{ group.items | join(", ") }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── 7. PROJECTS ───────────────────────────────────────────────────────── #}
+  {% if cv.projects %}
+  <div class="section">
+    <div class="section-heading">Projects</div>
+    {% for entry in cv.projects %}
+    <div class="entry">
+      <div class="entry-header">
+        <span class="entry-title">{{ entry.title }}</span>
+        {% if entry.github_url %}
+        <span class="entry-date">{{ entry.github_url }}</span>
+        {% endif %}
+      </div>
+      {% if entry.tools %}
+      <div class="entry-subtitle">{{ entry.tools | join(", ") }}</div>
+      {% endif %}
+      {% if entry.bullets %}
+      <ul class="bullets">
+        {% for bullet in entry.bullets %}
+        <li>{{ bullet }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── 8. CERTIFICATES ───────────────────────────────────────────────────── #}
+  {% if cv.certificates %}
+  <div class="section">
+    <div class="section-heading">Certificates</div>
+    {% for cert in cv.certificates %}
+    <div class="cert-entry">
+      <span class="cert-name">{{ cert.name }}</span>
+      {% if cert.issuer %}
+        <span class="cert-issuer"> · {{ cert.issuer }}</span>
+      {% endif %}
+      {% if cert.year %}
+        <span class="cert-issuer"> · {{ cert.year }}</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── 9. ORGANIZATIONS ──────────────────────────────────────────────────── #}
+  {% if cv.organizations %}
+  <div class="section">
+    <div class="section-heading">Organizations</div>
+    {% for entry in cv.organizations %}
+    <div class="entry">
+      <div class="entry-header">
+        <span class="entry-title">{{ entry.name }}</span>
+        <span class="entry-date">{{ entry.year }}</span>
+      </div>
+      {% if entry.role %}
+      <div class="entry-subtitle">{{ entry.role }}</div>
+      {% endif %}
+      {% if entry.bullets %}
+      <ul class="bullets">
+        {% for bullet in entry.bullets %}
+        <li>{{ bullet }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>
+</body>
+</html>
