@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from config import get_settings
 from db.auth import get_current_user
 from db.supabase import get_supabase
 
@@ -67,8 +68,6 @@ async def render_document(
     supabase = get_supabase()
 
     # ── Query cv_outputs — versi tertinggi yang sudah approved ────────────────
-    # Filter status: "user_approved" (baru approve) atau "final" (sudah pernah render)
-    # Order by version descending + limit 1 → ambil versi terbaru
     response = (
         supabase.table("cv_outputs")
         .select("version, content, status")
@@ -98,7 +97,6 @@ async def render_document(
     )
 
     # ── Render PDF + DOCX dan upload ke Supabase Storage ─────────────────────
-    # render_and_upload raise RuntimeError jika salah satu langkah gagal
     try:
         result = await render_and_upload(
             cv_output=cv_content,
@@ -118,7 +116,6 @@ async def render_document(
     docx_path = result["docx_path"]
 
     # ── Update status cv_outputs ke "final" ───────────────────────────────────
-    # Update hanya row dengan version yang sesuai — bukan semua versi
     supabase.table("cv_outputs").update({
         "status": "final",
     }).eq("application_id", id).eq("version", cv_version).execute()
@@ -137,22 +134,85 @@ async def render_document(
 
 # ── GET /applications/{id}/download ───────────────────────────────────────────
 
-@router.get("/{id}/download", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@router.get("/{id}/download", status_code=status.HTTP_200_OK)
 async def download_cv(
     id: str,
+    format: str = Query(default="pdf", pattern="^(pdf|docx)$"),
     current_user=Depends(get_current_user),
 ):
     """
     Generate a time-limited signed URL for downloading the rendered CV.
-    Accepts optional query parameter 'format' (pdf or docx, default: pdf).
-    PHASE 7 STUB: Will be implemented in Task 7.2.1.
+
+    Query parameter:
+        format: "pdf" (default) or "docx"
+
+    Returns signed URL valid for SIGNED_URL_EXPIRY_SECONDS (default 3600s = 1 hour).
     """
+    from renderer.storage import generate_signed_url
+
     await verify_application_ownership(
         application_id=id,
         user_id=str(current_user.id),
     )
 
+    supabase = get_supabase()
+    settings = get_settings()
+
+    # ── Query cv_outputs — versi final terbaru ────────────────────────────────
+    # Hanya row dengan status "final" yang sudah punya file di Storage
+    response = (
+        supabase.table("cv_outputs")
+        .select("version")
+        .eq("application_id", id)
+        .eq("status", "final")
+        .order("version", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "No rendered CV found. Please trigger rendering first "
+                "via POST /applications/{id}/render."
+            ),
+        )
+
+    cv_version = response.data[0]["version"]
+
+    # ── Konstruksi storage path berdasarkan format ────────────────────────────
+    # Path deterministic: {application_id}/cv_v{version}.{format}
+    # Konsisten dengan path yang dibuat oleh render_and_upload di storage.py
+    storage_path = f"{id}/cv_v{cv_version}.{format}"
+
+    logger.info(
+        f"[download_cv] generating signed URL for "
+        f"application_id={id}, format={format}, path={storage_path}"
+    )
+
+    # ── Generate signed URL ───────────────────────────────────────────────────
+    # generate_signed_url raise RuntimeError jika path tidak ada di Storage
+    # atau jika Supabase Storage API gagal
+    try:
+        signed_url = generate_signed_url(storage_path)
+    except RuntimeError as e:
+        logger.error(
+            f"[download_cv] failed to generate signed URL for "
+            f"path={storage_path}: {e}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+    logger.info(
+        f"[download_cv] signed URL generated for path={storage_path}, "
+        f"expires_in={settings.signed_url_expiry_seconds}s"
+    )
+
     return {
-        "status": "not_implemented",
-        "message": "Download endpoint will be implemented in Task 7.2.1",
+        "url": signed_url,
+        "format": format,
+        "expires_in_seconds": settings.signed_url_expiry_seconds,
     }
