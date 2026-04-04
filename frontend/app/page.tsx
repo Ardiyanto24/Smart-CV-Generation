@@ -1,101 +1,102 @@
-import Image from "next/image";
+// cv-agent/frontend/app/(app)/apply/[id]/page.tsx
 
-export default function Home() {
+import { redirect } from "next/navigation";
+import { createServerClient } from "@/lib/supabase-server";
+import { Card } from "@/components/ui/card";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
+import Link from "next/link";
+
+interface ApplicationPageProps {
+  params: { id: string };
+}
+
+export default async function ApplicationPage({ params }: ApplicationPageProps) {
+  const { id } = params;
+  const supabase = await createServerClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  // Fetch application data — verifikasi ownership sekaligus
+  const { data: application, error } = await supabase
+    .from("applications")
+    .select("id, company_name, position, status")
+    .eq("id", id)
+    .eq("user_id", user.id)
+    .single();
+
+  // Tidak ditemukan atau bukan milik user ini
+  if (error || !application) {
+    redirect("/dashboard");
+  }
+
+  // Jika workflow sudah berjalan, redirect ke halaman yang tepat
+  if (application.status !== "draft") {
+    redirect(`/apply/${id}/gap`);
+  }
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+    <ErrorBoundary>
+      <div className="flex flex-col gap-8 max-w-xl mx-auto">
+        {/* Page header */}
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">
+            Draft Application
+          </h1>
+          <p className="mt-1 text-sm text-gray-500">
+            This application has not been started yet
+          </p>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+
+        {/* Application info */}
+        <Card className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1">
+            <p className="text-xs text-gray-400 uppercase tracking-wide">
+              Company
+            </p>
+            <p className="text-base font-semibold text-gray-900">
+              {application.company_name}
+            </p>
+          </div>
+          <div className="flex flex-col gap-1">
+            <p className="text-xs text-gray-400 uppercase tracking-wide">
+              Position
+            </p>
+            <p className="text-base font-semibold text-gray-900">
+              {application.position}
+            </p>
+          </div>
+
+          <div className="border-t border-gray-100 pt-4">
+            <p className="text-sm text-gray-500 mb-4">
+              You have not started the CV generation workflow for this
+              application yet. Click below to continue to the job description
+              input and start the analysis.
+            </p>
+
+            {/* Start Workflow button — navigasi ke /apply/new dengan pre-filled data */}
+            <Link
+              href={`/apply/new?company=${encodeURIComponent(application.company_name)}&position=${encodeURIComponent(application.position)}&application_id=${id}`}
+              className="inline-flex items-center justify-center rounded-md bg-blue-600 px-6 h-10 text-sm font-medium text-white transition-colors hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+            >
+              Start Workflow
+            </Link>
+          </div>
+        </Card>
+
+        {/* Back link */}
+        <Link
+          href="/dashboard"
+          className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 transition-colors"
         >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+          ← Back to Dashboard
+        </Link>
+      </div>
+    </ErrorBoundary>
   );
 }
