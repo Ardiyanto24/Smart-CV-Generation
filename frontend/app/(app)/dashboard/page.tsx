@@ -3,14 +3,12 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase-server";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 
-// ── Status badge mapping ───────────────────────────────────────────────────────
-// Memetakan status dari DB ke variant Badge dan label yang ditampilkan ke user
+// ── Types ─────────────────────────────────────────────────────────────────────
 type ApplicationStatus =
   | "draft"
   | "applied"
@@ -19,6 +17,7 @@ type ApplicationStatus =
   | "rejected"
   | "accepted";
 
+// ── Status mappings ───────────────────────────────────────────────────────────
 const statusBadgeVariant: Record
   ApplicationStatus,
   "neutral" | "info" | "warning" | "success" | "error"
@@ -49,9 +48,6 @@ function formatDate(dateStr: string): string {
   });
 }
 
-// Menentukan destination URL saat card diklik.
-// Jika status masih "draft", berarti workflow belum dimulai → ke /apply/{id}
-// Jika sudah melewati start → ke /apply/{id}/gap (titik pertama setelah workflow start)
 function getApplicationHref(id: string, status: ApplicationStatus): string {
   if (status === "draft") return `/apply/${id}`;
   return `/apply/${id}/gap`;
@@ -61,7 +57,6 @@ function getApplicationHref(id: string, status: ApplicationStatus): string {
 export default async function DashboardPage() {
   const supabase = await createServerClient();
 
-  // Double-guard: pastikan session ada
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -70,14 +65,12 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  // Fetch semua aplikasi milik user, diurutkan terbaru di atas
   const { data: applications, error } = await supabase
     .from("applications")
     .select("id, company_name, position, status, created_at")
     .eq("user_id", user.id)
     .order("created_at", { ascending: false });
 
-  // Jika fetch gagal, lempar error agar ditangkap ErrorBoundary
   if (error) {
     throw new Error("Failed to load applications. Please try again.");
   }
@@ -94,9 +87,12 @@ export default async function DashboardPage() {
             Manage and track your job applications
           </p>
         </div>
-        <Button asChild>
-          <Link href="/apply/new">New Application</Link>
-        </Button>
+        <Link
+          href="/apply/new"
+          className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 h-10 text-sm font-medium text-white transition-colors hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+        >
+          New Application
+        </Link>
       </div>
 
       {/* Application List */}
@@ -106,9 +102,12 @@ export default async function DashboardPage() {
             title="No applications yet"
             description="Start by creating your first application and let CV Agent tailor your CV."
             action={
-              <Button asChild>
-                <Link href="/apply/new">Start your first application</Link>
-              </Button>
+              <Link
+                href="/apply/new"
+                className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 h-10 text-sm font-medium text-white transition-colors hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+              >
+                Start your first application
+              </Link>
             }
           />
         ) : (
@@ -119,7 +118,7 @@ export default async function DashboardPage() {
                 <Link
                   key={app.id}
                   href={getApplicationHref(app.id, status)}
-                  className="block transition-shadow hover:shadow-md rounded-lg"
+                  className="block rounded-lg transition-shadow hover:shadow-md"
                 >
                   <Card className="flex items-center justify-between gap-4">
                     {/* Company + Position */}
